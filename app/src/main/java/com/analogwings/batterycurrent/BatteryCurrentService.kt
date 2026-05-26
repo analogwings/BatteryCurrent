@@ -11,6 +11,7 @@ import android.content.IntentFilter
 import android.content.res.ColorStateList
 import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.DashPathEffect
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.PixelFormat
@@ -1570,6 +1571,12 @@ class BatteryCurrentService : Service() {
             style = Paint.Style.STROKE
             strokeWidth = 3f
         }
+        private val rightAxisZeroLinePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.argb(150, 255, 255, 255)
+            style = Paint.Style.STROKE
+            strokeWidth = 2f
+            pathEffect = DashPathEffect(floatArrayOf(10f, 8f), 0f)
+        }
         private val axisTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = Color.argb(220, 255, 255, 255)
             textSize = 28f
@@ -1955,14 +1962,22 @@ class BatteryCurrentService : Service() {
                 batteryLinePaint.color = rightAxisTraceColor(current.value)
                 canvas.drawLine(previous.x, previous.y, current.x, current.y, batteryLinePaint)
             }
+            drawRightAxisZeroLine(canvas, scale)
         }
 
         private fun rightAxisTraceColor(value: Double): Int {
             return if (rightAxisMode == RightAxisMode.CURRENT) {
-                if (value >= 0.0) Color.rgb(255, 145, 40) else Color.rgb(255, 230, 65)
+                if (value >= 0.0) Color.rgb(80, 165, 255) else Color.rgb(255, 230, 65)
             } else {
                 Color.rgb(80, 165, 255)
             }
+        }
+
+        private fun drawRightAxisZeroLine(canvas: Canvas, scale: RightAxisScale) {
+            if (rightAxisMode != RightAxisMode.CURRENT || scale.min > 0.0 || scale.max < 0.0) return
+
+            val y = yForRightAxisValue(0.0, scale)
+            canvas.drawLine(plotBounds.left, y, plotBounds.right, y, rightAxisZeroLinePaint)
         }
 
         private fun buildRightAxisTracePoints(
