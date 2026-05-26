@@ -12,6 +12,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -20,8 +21,13 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
@@ -49,16 +55,16 @@ class MainActivity : ComponentActivity() {
                     color = MaterialTheme.colorScheme.background
                 ) {
                     BatteryCurrentScreen(
+                        initialTemporaryProEnabled = ProFeatureGate.isTemporaryProEnabled(this),
                         onStart = { requestPermissionThenStart() },
-                        onStop = { stopBatteryService() }
+                        onStop = { stopBatteryService() },
+                        onTemporaryProChanged = { enabled ->
+                            ProFeatureGate.setTemporaryProEnabled(this, enabled)
+                        }
                     )
                 }
             }
         }
-
-        // Normal launch behavior: start the monitor automatically, then put this
-        // activity in the background. The notification can show the floating readout later.
-        requestPermissionThenStart()
     }
 
     override fun onResume() {
@@ -131,9 +137,13 @@ class MainActivity : ComponentActivity() {
 
 @Composable
 private fun BatteryCurrentScreen(
+    initialTemporaryProEnabled: Boolean,
     onStart: () -> Unit,
-    onStop: () -> Unit
+    onStop: () -> Unit,
+    onTemporaryProChanged: (Boolean) -> Unit
 ) {
+    var temporaryProEnabled by remember { mutableStateOf(initialTemporaryProEnabled) }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -150,9 +160,30 @@ private fun BatteryCurrentScreen(
         Spacer(modifier = Modifier.height(12.dp))
 
         Text(
-            text = "Starting monitor automatically. The floating readout will appear, then tap it to open the graph.",
+            text = "Turn on temporary Pro mode for testing if needed, then start monitoring. The floating readout will appear, then tap it to open the graph.",
             style = MaterialTheme.typography.bodyMedium
         )
+
+        Spacer(modifier = Modifier.height(24.dp))
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Text(
+                text = "Temporary Pro mode",
+                style = MaterialTheme.typography.bodyLarge,
+                fontWeight = FontWeight.Medium
+            )
+            Switch(
+                checked = temporaryProEnabled,
+                onCheckedChange = { enabled ->
+                    temporaryProEnabled = enabled
+                    onTemporaryProChanged(enabled)
+                }
+            )
+        }
 
         Spacer(modifier = Modifier.height(24.dp))
 

@@ -53,7 +53,6 @@ class BatteryCurrentService : Service() {
         private const val ENERGY_UNIT_MAH = "mAh"
         private const val TEMPERATURE_UNIT_C = "C"
         private const val TEMPERATURE_UNIT_F = "F"
-        private const val POPUP_VERSION = "v03"
         private const val CALIBRATION_DOT_BLINK_MS = 500L
         private const val GRAPH_BLINK_UPDATE_MS = 500L
         private const val RIGHT_AXIS_BATTERY = "battery"
@@ -490,13 +489,17 @@ class BatteryCurrentService : Service() {
             voltageMv
         ))
         trimEnergyHistory(now)
-        capacityDisplayState = capacityEstimator.processSample(
-            batteryPercent = latestBatteryPercent,
-            totalChargeMah = totalNetChargeMilliAmpHours,
-            averageMilliAmps = averageMilliAmps,
-            temperatureC = temperatureC,
-            voltageMv = voltageMv
-        )
+        capacityDisplayState = if (ProFeatureGate.isProEnabled(this)) {
+            capacityEstimator.processSample(
+                batteryPercent = latestBatteryPercent,
+                totalChargeMah = totalNetChargeMilliAmpHours,
+                averageMilliAmps = averageMilliAmps,
+                temperatureC = temperatureC,
+                voltageMv = voltageMv
+            )
+        } else {
+            BatteryCapacityEstimator.DisplayState(null, null, false)
+        }
         persistEnergyTracking()
     }
 
@@ -595,7 +598,9 @@ class BatteryCurrentService : Service() {
         updateGraphOverlay()
     }
 
-    private fun selectedRightAxisMode(): RightAxisMode {
+    private fun selectedRightAxisMode(): RightAxisMode? {
+        if (!ProFeatureGate.isProEnabled(this)) return null
+
         return RightAxisMode.fromStorage(
             getSharedPreferences(displayPrefsName, Context.MODE_PRIVATE)
                 .getString(rightAxisModeKey, RIGHT_AXIS_BATTERY)
@@ -603,7 +608,8 @@ class BatteryCurrentService : Service() {
     }
 
     private fun cycleRightAxisMode() {
-        val nextMode = selectedRightAxisMode().next()
+        val currentMode = selectedRightAxisMode() ?: return
+        val nextMode = currentMode.next()
         getSharedPreferences(displayPrefsName, Context.MODE_PRIVATE)
             .edit()
             .putString(rightAxisModeKey, nextMode.storageValue)
@@ -961,7 +967,7 @@ class BatteryCurrentService : Service() {
                 gravity = Gravity.CENTER_VERTICAL
 
                 addView(TextView(this@BatteryCurrentService).apply {
-                    text = "BatteryCurrent"
+                    text = ProFeatureGate.appTitle(this@BatteryCurrentService)
                     textSize = 17f
                     setTypeface(typeface, Typeface.BOLD)
                     setTextColor(Color.WHITE)
@@ -992,7 +998,7 @@ class BatteryCurrentService : Service() {
             addView(createCapacityEstimateView())
 
             addView(TextView(this@BatteryCurrentService).apply {
-                text = POPUP_VERSION
+                text = ProFeatureGate.displayVersion(this@BatteryCurrentService)
                 textSize = 10f
                 setTextColor(Color.argb(150, 255, 255, 255))
                 gravity = Gravity.END
@@ -1033,7 +1039,11 @@ class BatteryCurrentService : Service() {
         val versionView = container.getChildAt(6) as? TextView
 
         val now = System.currentTimeMillis()
-        capacityDisplayState = capacityEstimator.displayState()
+        capacityDisplayState = if (ProFeatureGate.isProEnabled(this)) {
+            capacityEstimator.displayState()
+        } else {
+            BatteryCapacityEstimator.DisplayState(null, null, false)
+        }
         summaryView.text = buildLiveSummary(now)
         graphView.setPoints(
             energyHistory.toList(),
@@ -1056,7 +1066,8 @@ class BatteryCurrentService : Service() {
         if (versionView == null) return
         val showDot = capacityDisplayState.isEventActive &&
                 ((now - graphOverlayCreatedAtMs) / CALIBRATION_DOT_BLINK_MS) % 2L == 0L
-        versionView.text = if (showDot) "\u2022 $POPUP_VERSION" else POPUP_VERSION
+        val versionText = ProFeatureGate.displayVersion(this)
+        versionView.text = if (showDot) "\u2022 $versionText" else versionText
     }
 
     private fun createCapacityEstimateView(): LinearLayout {
@@ -1089,8 +1100,10 @@ class BatteryCurrentService : Service() {
                     styleGraphMenuButton(this, textSizeSp = 11f)
                     text = "Clear"
                     setOnClickListener {
-                        capacityEstimator.clearWarning()
-                        capacityDisplayState = capacityEstimator.displayState()
+                        if (ProFeatureGate.isProEnabled(this@BatteryCurrentService)) {
+                            capacityEstimator.clearWarning()
+                            capacityDisplayState = capacityEstimator.displayState()
+                        }
                         updateGraphOverlay()
                     }
                 })
@@ -1101,6 +1114,12 @@ class BatteryCurrentService : Service() {
 
     private fun updateCapacityEstimatePanel(panel: LinearLayout?) {
         if (panel == null) return
+        if (!ProFeatureGate.isProEnabled(this)) {
+            panel.visibility = View.GONE
+            return
+        }
+        panel.visibility = View.VISIBLE
+
         val estimateView = panel.getChildAt(0) as? TextView
         val warningRow = panel.getChildAt(1) as? LinearLayout
         val warningView = warningRow?.getChildAt(0) as? TextView
@@ -1438,8 +1457,12 @@ class BatteryCurrentService : Service() {
         lastSampleTimestampMs = now
         totalNetEnergyMilliWattHours = 0.0
         totalNetChargeMilliAmpHours = 0.0
-        capacityEstimator.resetSegment(totalNetChargeMilliAmpHours)
-        capacityDisplayState = capacityEstimator.displayState()
+        if (ProFeatureGate.isProEnabled(this)) {
+            capacityEstimator.resetSegment(totalNetChargeMilliAmpHours)
+            capacityDisplayState = capacityEstimator.displayState()
+        } else {
+            capacityDisplayState = BatteryCapacityEstimator.DisplayState(null, null, false)
+        }
         energyHistory.clear()
         energyHistory.add(EnergyPoint(now, 0.0, 0.0, latestGraphBatteryPercent, latestRoundedMilliAmps?.toDouble(), latestTemperatureC, latestVoltageMv))
         persistEnergyTracking()
@@ -1512,7 +1535,7 @@ class BatteryCurrentService : Service() {
         private val points = ArrayList<EnergyPoint>()
         private var displayUnit = ENERGY_UNIT_MWH
         private var zeroTimestampMs = 0L
-        private var rightAxisMode = RightAxisMode.BATTERY
+        private var rightAxisMode: RightAxisMode? = null
         private var useFahrenheit = false
         var onRightAxisLabelClick: (() -> Unit)? = null
         var onViewportChanged: (() -> Unit)? = null
@@ -1627,7 +1650,7 @@ class BatteryCurrentService : Service() {
             newPoints: List<EnergyPoint>,
             unit: String,
             zeroTimeMs: Long,
-            newRightAxisMode: RightAxisMode,
+            newRightAxisMode: RightAxisMode?,
             newUseFahrenheit: Boolean
         ) {
             points.clear()
@@ -1642,7 +1665,7 @@ class BatteryCurrentService : Service() {
         override fun onTouchEvent(event: MotionEvent): Boolean {
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
-                    isRightAxisLabelTouchActive = rightAxisLabelHitRect.contains(event.x, event.y)
+                    isRightAxisLabelTouchActive = rightAxisMode != null && rightAxisLabelHitRect.contains(event.x, event.y)
                     val isResetZoomTouch = resetZoomHitRect.contains(event.x, event.y)
                     isSingleFingerDragActive = !isRightAxisLabelTouchActive && !isResetZoomTouch && plotBounds.contains(event.x, event.y)
                     lastSingleRawX = event.rawX
@@ -1898,6 +1921,11 @@ class BatteryCurrentService : Service() {
         }
 
         private fun drawRightAxisUnitLabel(canvas: Canvas) {
+            val mode = rightAxisMode ?: run {
+                rightAxisLabelHitRect.setEmpty()
+                return
+            }
+
             axisTextPaint.textAlign = Paint.Align.CENTER
             val labelX = plotBounds.right + 82f
             val labelY = plotBounds.centerY()
@@ -1905,7 +1933,7 @@ class BatteryCurrentService : Service() {
             canvas.drawRoundRect(rightAxisLabelHitRect, 10f, 10f, rightAxisLabelBackgroundPaint)
             canvas.save()
             canvas.rotate(90f, labelX, labelY)
-            canvas.drawText(rightAxisMode.label, labelX, labelY + 10f, axisTextPaint)
+            canvas.drawText(mode.label, labelX, labelY + 10f, axisTextPaint)
             canvas.restore()
         }
 
@@ -2040,6 +2068,7 @@ class BatteryCurrentService : Service() {
 
         private fun chooseRightAxisScale(visiblePoints: List<EnergyPoint>): RightAxisScale? {
             return when (rightAxisMode) {
+                null -> null
                 RightAxisMode.BATTERY -> RightAxisScale(0.0, 100.0, listOf(0.0, 25.0, 50.0, 75.0, 100.0))
                 RightAxisMode.VOLTAGE -> RightAxisScale(3.5, 4.5, listOf(3.5, 3.75, 4.0, 4.25, 4.5))
                 RightAxisMode.TEMPERATURE,
@@ -2070,6 +2099,7 @@ class BatteryCurrentService : Service() {
 
         private fun rightAxisValue(point: EnergyPoint): Double? {
             return when (rightAxisMode) {
+                null -> null
                 RightAxisMode.BATTERY -> point.batteryPercent
                 RightAxisMode.TEMPERATURE -> point.temperatureC?.let {
                     if (useFahrenheit) it * 9.0 / 5.0 + 32.0 else it

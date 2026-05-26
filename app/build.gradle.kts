@@ -7,6 +7,14 @@ providers.gradleProperty("codexBuildDir").orNull?.let { customBuildDir ->
     layout.buildDirectory.set(file(customBuildDir))
 }
 
+val appVersionCode = 100
+val appVersionName = "1.00"
+val appDisplayVersion = "v$appVersionName ($appVersionCode)"
+val appDebugDisplayVersion = "v$appVersionName-dev ($appVersionCode)"
+val isProBuild = providers.gradleProperty("batteryCurrentPro")
+    .map { it.equals("true", ignoreCase = true) }
+    .getOrElse(false)
+
 android {
     namespace = "com.analogwings.batterycurrent"
     compileSdk {
@@ -19,15 +27,25 @@ android {
         applicationId = "com.analogwings.batterycurrent"
         minSdk = 26
         targetSdk = 36
-        versionCode = 3
-        versionName = "0.3"
+        versionCode = appVersionCode
+        versionName = appVersionName
+        buildConfigField("boolean", "IS_PRO_VERSION", isProBuild.toString())
+        buildConfigField("String", "APP_DISPLAY_VERSION", "\"$appDisplayVersion\"")
+        buildConfigField("String", "APP_BUILD_TRACK", "\"release\"")
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
     buildTypes {
+        debug {
+            versionNameSuffix = "-dev"
+            buildConfigField("String", "APP_DISPLAY_VERSION", "\"$appDebugDisplayVersion\"")
+            buildConfigField("String", "APP_BUILD_TRACK", "\"dev\"")
+        }
         release {
             isMinifyEnabled = false
+            buildConfigField("String", "APP_DISPLAY_VERSION", "\"$appDisplayVersion\"")
+            buildConfigField("String", "APP_BUILD_TRACK", "\"release\"")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
@@ -40,6 +58,7 @@ android {
     }
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 }
 
