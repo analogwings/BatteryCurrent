@@ -1771,7 +1771,7 @@ class BatteryCurrentService : Service() {
             fillPath.lineTo(plotBounds.right, zeroY)
             fillPath.close()
 
-            fillPaint.color = Color.argb(45, 255, 255, 255)
+            fillPaint.color = Color.argb(22, 255, 255, 255)
             canvas.drawPath(fillPath, fillPaint)
             canvas.drawLine(plotBounds.left, zeroY, plotBounds.right, zeroY, zeroLinePaint)
             for (i in 1 until chartPoints.size) {
@@ -1952,7 +1952,16 @@ class BatteryCurrentService : Service() {
             for (i in 1 until rightAxisPoints.size) {
                 val previous = rightAxisPoints[i - 1]
                 val current = rightAxisPoints[i]
+                batteryLinePaint.color = rightAxisTraceColor(current.value)
                 canvas.drawLine(previous.x, previous.y, current.x, current.y, batteryLinePaint)
+            }
+        }
+
+        private fun rightAxisTraceColor(value: Double): Int {
+            return if (rightAxisMode == RightAxisMode.CURRENT) {
+                if (value >= 0.0) Color.rgb(255, 145, 40) else Color.rgb(255, 230, 65)
+            } else {
+                Color.rgb(80, 165, 255)
             }
         }
 
