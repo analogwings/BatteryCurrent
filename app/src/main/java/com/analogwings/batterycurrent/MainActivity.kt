@@ -18,8 +18,11 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -31,6 +34,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.analogwings.batterycurrent.ui.theme.BatteryCurrentTheme
 
@@ -56,10 +60,18 @@ class MainActivity : ComponentActivity() {
                 ) {
                     BatteryCurrentScreen(
                         initialTemporaryProEnabled = ProFeatureGate.isTemporaryProEnabled(this),
+                        initialOriginalCapacityMah = BatteryCapacityReference.originalCapacityMah(this),
+                        initialShowCapacityPrompt = !BatteryCapacityReference.hasSeenPrompt(this),
                         onStart = { requestPermissionThenStart() },
                         onStop = { stopBatteryService() },
                         onTemporaryProChanged = { enabled ->
                             ProFeatureGate.setTemporaryProEnabled(this, enabled)
+                        },
+                        onOriginalCapacityChanged = { capacityMah ->
+                            BatteryCapacityReference.saveOriginalCapacityMah(this, capacityMah)
+                        },
+                        onOriginalCapacitySkipped = {
+                            BatteryCapacityReference.markPromptSeen(this)
                         }
                     )
                 }
@@ -138,11 +150,32 @@ class MainActivity : ComponentActivity() {
 @Composable
 private fun BatteryCurrentScreen(
     initialTemporaryProEnabled: Boolean,
+    initialOriginalCapacityMah: Int?,
+    initialShowCapacityPrompt: Boolean,
     onStart: () -> Unit,
     onStop: () -> Unit,
-    onTemporaryProChanged: (Boolean) -> Unit
+    onTemporaryProChanged: (Boolean) -> Unit,
+    onOriginalCapacityChanged: (Int?) -> Unit,
+    onOriginalCapacitySkipped: () -> Unit
 ) {
     var temporaryProEnabled by remember { mutableStateOf(initialTemporaryProEnabled) }
+    var originalCapacityMah by remember { mutableStateOf(initialOriginalCapacityMah) }
+    var showCapacityDialog by remember { mutableStateOf(initialShowCapacityPrompt) }
+
+    if (showCapacityDialog) {
+        OriginalCapacityDialog(
+            initialCapacityMah = originalCapacityMah,
+            onSave = { capacityMah ->
+                originalCapacityMah = capacityMah
+                onOriginalCapacityChanged(capacityMah)
+                showCapacityDialog = false
+            },
+            onSkip = {
+                onOriginalCapacitySkipped()
+                showCapacityDialog = false
+            }
+        )
+    }
 
     Column(
         modifier = Modifier
@@ -160,8 +193,15 @@ private fun BatteryCurrentScreen(
         Spacer(modifier = Modifier.height(12.dp))
 
         Text(
-            text = "Turn on temporary Pro mode for testing if needed, then start monitoring. The floating readout will appear, then tap it to open the graph.",
+            text = "Battery health data is being collected. Upgrade to Pro to view capacity and degradation insights.",
             style = MaterialTheme.typography.bodyMedium
+        )
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        Text(
+            text = "For testing, turn on temporary Pro mode before starting monitoring. The floating readout will appear, then tap it to open the graph.",
+            style = MaterialTheme.typography.bodySmall
         )
 
         Spacer(modifier = Modifier.height(24.dp))
@@ -185,6 +225,22 @@ private fun BatteryCurrentScreen(
             )
         }
 
+        Spacer(modifier = Modifier.height(12.dp))
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Text(
+                text = originalCapacityMah?.let { "Original capacity: ${it}mAh" } ?: "Original capacity not set",
+                style = MaterialTheme.typography.bodyMedium
+            )
+            Button(onClick = { showCapacityDialog = true }) {
+                Text(if (originalCapacityMah == null) "Add" else "Edit")
+            }
+        }
+
         Spacer(modifier = Modifier.height(24.dp))
 
         Button(
@@ -203,4 +259,50 @@ private fun BatteryCurrentScreen(
             Text("Stop Monitoring")
         }
     }
+}
+
+@Composable
+private fun OriginalCapacityDialog(
+    initialCapacityMah: Int?,
+    onSave: (Int?) -> Unit,
+    onSkip: () -> Unit
+) {
+    var capacityText by remember { mutableStateOf(initialCapacityMah?.toString() ?: "") }
+
+    AlertDialog(
+        onDismissRequest = onSkip,
+        title = { Text("Original battery capacity") },
+        text = {
+            Column {
+                Text(
+                    text = "Enter the phone's original rated battery capacity in mAh. If you skip this, estimated capacity will stay green instead of using health color bands.",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+                Spacer(modifier = Modifier.height(12.dp))
+                OutlinedTextField(
+                    value = capacityText,
+                    onValueChange = { value ->
+                        capacityText = value.filter { it.isDigit() }.take(6)
+                    },
+                    label = { Text("Capacity in mAh") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+                )
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    onSave(capacityText.toIntOrNull())
+                }
+            ) {
+                Text("Save")
+            }
+        },
+        dismissButton = {
+            Button(onClick = onSkip) {
+                Text("Skip")
+            }
+        }
+    )
 }

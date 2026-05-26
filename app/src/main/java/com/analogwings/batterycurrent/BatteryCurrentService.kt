@@ -116,6 +116,7 @@ class BatteryCurrentService : Service() {
     private val graphDischargeTextColor = Color.rgb(245, 105, 105)
     private val graphWarmTextColor = Color.rgb(255, 190, 70)
     private val graphCoolTextColor = Color.rgb(95, 220, 135)
+    private val graphEstimateLabelColor = Color.rgb(245, 225, 170)
     private val graphBackgroundColor = Color.argb(242, 24, 26, 33)
 
     private val energyHistory = ArrayList<EnergyPoint>()
@@ -489,17 +490,13 @@ class BatteryCurrentService : Service() {
             voltageMv
         ))
         trimEnergyHistory(now)
-        capacityDisplayState = if (ProFeatureGate.isProEnabled(this)) {
-            capacityEstimator.processSample(
-                batteryPercent = latestBatteryPercent,
-                totalChargeMah = totalNetChargeMilliAmpHours,
-                averageMilliAmps = averageMilliAmps,
-                temperatureC = temperatureC,
-                voltageMv = voltageMv
-            )
-        } else {
-            BatteryCapacityEstimator.DisplayState(null, null, false)
-        }
+        capacityDisplayState = capacityEstimator.processSample(
+            batteryPercent = latestBatteryPercent,
+            totalChargeMah = totalNetChargeMilliAmpHours,
+            averageMilliAmps = averageMilliAmps,
+            temperatureC = temperatureC,
+            voltageMv = voltageMv
+        )
         persistEnergyTracking()
     }
 
@@ -1039,11 +1036,7 @@ class BatteryCurrentService : Service() {
         val versionView = container.getChildAt(6) as? TextView
 
         val now = System.currentTimeMillis()
-        capacityDisplayState = if (ProFeatureGate.isProEnabled(this)) {
-            capacityEstimator.displayState()
-        } else {
-            BatteryCapacityEstimator.DisplayState(null, null, false)
-        }
+        capacityDisplayState = capacityEstimator.displayState()
         summaryView.text = buildLiveSummary(now)
         graphView.setPoints(
             energyHistory.toList(),
@@ -1126,8 +1119,7 @@ class BatteryCurrentService : Service() {
 
         val estimateMah = capacityDisplayState.estimateMah
         if (estimateMah != null) {
-            estimateView?.text = String.format(Locale.US, "Estimated battery capacity: %dmAh", estimateMah)
-            estimateView?.setTextColor(Color.WHITE)
+            estimateView?.text = buildCapacityEstimateText(estimateMah)
             estimateView?.visibility = View.VISIBLE
         } else {
             estimateView?.visibility = View.GONE
@@ -1139,6 +1131,38 @@ class BatteryCurrentService : Service() {
             warningRow?.visibility = View.VISIBLE
         } else {
             warningRow?.visibility = View.GONE
+        }
+    }
+
+    private fun buildCapacityEstimateText(estimateMah: Int): SpannableString {
+        val label = "Estimated battery capacity: "
+        val value = String.format(Locale.US, "%dmAh", estimateMah)
+        return SpannableString(label + value).apply {
+            setSpan(
+                ForegroundColorSpan(graphEstimateLabelColor),
+                0,
+                label.length,
+                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+            )
+            setSpan(
+                ForegroundColorSpan(capacityEstimateColor(estimateMah)),
+                label.length,
+                label.length + value.length,
+                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+            )
+        }
+    }
+
+    private fun capacityEstimateColor(estimateMah: Int): Int {
+        val originalMah = BatteryCapacityReference.originalCapacityMah(this) ?: return graphCoolTextColor
+        if (originalMah <= 0) return graphCoolTextColor
+
+        val reductionPercent = ((originalMah - estimateMah).coerceAtLeast(0) * 100.0) / originalMah
+        return when {
+            reductionPercent > 30.0 -> graphDischargeTextColor
+            reductionPercent > 20.0 -> Color.rgb(255, 145, 40)
+            reductionPercent > 10.0 -> graphWarmTextColor
+            else -> graphCoolTextColor
         }
     }
 
@@ -1457,12 +1481,8 @@ class BatteryCurrentService : Service() {
         lastSampleTimestampMs = now
         totalNetEnergyMilliWattHours = 0.0
         totalNetChargeMilliAmpHours = 0.0
-        if (ProFeatureGate.isProEnabled(this)) {
-            capacityEstimator.resetSegment(totalNetChargeMilliAmpHours)
-            capacityDisplayState = capacityEstimator.displayState()
-        } else {
-            capacityDisplayState = BatteryCapacityEstimator.DisplayState(null, null, false)
-        }
+        capacityEstimator.resetSegment(totalNetChargeMilliAmpHours)
+        capacityDisplayState = capacityEstimator.displayState()
         energyHistory.clear()
         energyHistory.add(EnergyPoint(now, 0.0, 0.0, latestGraphBatteryPercent, latestRoundedMilliAmps?.toDouble(), latestTemperatureC, latestVoltageMv))
         persistEnergyTracking()
