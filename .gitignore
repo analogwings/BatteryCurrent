@@ -9,6 +9,8 @@
 /git-data
 /.idea
 /backups
+/docs/manual/rendered
+/docs/manual/tmp
 /local.properties
 /.idea/caches
 /.idea/libraries
