@@ -55,8 +55,8 @@ class BatteryCurrentService : Service() {
         private const val ENERGY_UNIT_MAH = "mAh"
         private const val TEMPERATURE_UNIT_C = "C"
         private const val TEMPERATURE_UNIT_F = "F"
-        private const val CALIBRATION_DOT_BLINK_MS = 500L
-        private const val GRAPH_BLINK_UPDATE_MS = 500L
+        private const val CALIBRATION_DOT_BLINK_MS = 1000L
+        private const val GRAPH_BLINK_UPDATE_MS = 1000L
         private const val RIGHT_AXIS_BATTERY = "battery"
         private const val RIGHT_AXIS_TEMPERATURE = "temperature"
         private const val RIGHT_AXIS_VOLTAGE = "voltage"
@@ -135,7 +135,7 @@ class BatteryCurrentService : Service() {
     private var latestBatteryPercent: Int? = null
     private var latestGraphBatteryPercent: Double? = null
     private var latestBatteryPercentHasFraction = false
-    private var capacityDisplayState = BatteryCapacityEstimator.DisplayState(null, null, false)
+    private var capacityDisplayState = BatteryCapacityEstimator.DisplayState(null, null, false, false)
     private var graphOverlayCreatedAtMs = 0L
     private var lastDisplay = CurrentDisplay("Starting...", idleBackgroundColor)
     private var isUpdateScheduled = false
@@ -968,6 +968,20 @@ class BatteryCurrentService : Service() {
                 gravity = Gravity.CENTER_VERTICAL
 
                 addView(TextView(this@BatteryCurrentService).apply {
+                    text = "\u2022"
+                    textSize = 24f
+                    setTypeface(typeface, Typeface.BOLD)
+                    setTextColor(Color.rgb(255, 220, 35))
+                    gravity = Gravity.CENTER
+                    visibility = View.GONE
+                    includeFontPadding = false
+                    setPadding(0, 0, 8, 0)
+                }, LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                ))
+
+                addView(TextView(this@BatteryCurrentService).apply {
                     text = ProFeatureGate.appTitle(this@BatteryCurrentService)
                     textSize = 17f
                     setTypeface(typeface, Typeface.BOLD)
@@ -1036,6 +1050,7 @@ class BatteryCurrentService : Service() {
 
     private fun updateGraphOverlay() {
         val container = graphOverlayView ?: return
+        val titleRow = container.getChildAt(0) as? LinearLayout
         val summaryView = container.getChildAt(1) as? TextView ?: return
         val graphView = ((container.getChildAt(2) as? LinearLayout)?.getChildAt(0) as? EnergyGraphView) ?: return
         val capacityPanel = container.getChildAt(6) as? LinearLayout
@@ -1053,6 +1068,7 @@ class BatteryCurrentService : Service() {
         )
         updateCapacityEstimatePanel(capacityPanel)
         updateGraphMenuVisibility(container)
+        updateCapacityEventIndicator(titleRow, now)
         updateVersionIndicator(versionView, now)
         updateGraphZoomResetButton()
     }
@@ -1106,10 +1122,25 @@ class BatteryCurrentService : Service() {
 
     private fun updateVersionIndicator(versionView: TextView?, now: Long) {
         if (versionView == null) return
-        val showDot = capacityDisplayState.isEventActive &&
-                ((now - graphOverlayCreatedAtMs) / CALIBRATION_DOT_BLINK_MS) % 2L == 0L
-        val versionText = ProFeatureGate.displayVersion(this)
-        versionView.text = if (showDot) "\u2022 $versionText" else versionText
+        versionView.text = ProFeatureGate.displayVersion(this)
+    }
+
+    private fun updateCapacityEventIndicator(titleRow: LinearLayout?, now: Long) {
+        val dotView = titleRow?.getChildAt(0) as? TextView ?: return
+        when {
+            capacityDisplayState.isEventActive -> {
+                val showDot = ((now - graphOverlayCreatedAtMs) / CALIBRATION_DOT_BLINK_MS) % 2L == 0L
+                dotView.visibility = if (showDot) View.VISIBLE else View.INVISIBLE
+                dotView.setTextColor(graphCoolTextColor)
+            }
+            capacityDisplayState.isEventArmed -> {
+                dotView.visibility = View.VISIBLE
+                dotView.setTextColor(Color.rgb(255, 220, 35))
+            }
+            else -> {
+                dotView.visibility = View.GONE
+            }
+        }
     }
 
     private fun createCapacityEstimateView(): LinearLayout {

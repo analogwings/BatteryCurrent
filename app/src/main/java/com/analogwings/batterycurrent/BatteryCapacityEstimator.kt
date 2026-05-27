@@ -13,7 +13,8 @@ class BatteryCapacityEstimator(private val context: Context) {
     data class DisplayState(
         val estimateMah: Int?,
         val warningText: String?,
-        val isEventActive: Boolean
+        val isEventActive: Boolean,
+        val isEventArmed: Boolean
     )
 
     data class DailyEstimateSummary(
@@ -90,10 +91,12 @@ class BatteryCapacityEstimator(private val context: Context) {
     }
 
     fun displayState(): DisplayState {
+        val activeEvent = readActiveEvent()
         return DisplayState(
             estimateMah = latestDailyEstimate(),
             warningText = buildWarningText(),
-            isEventActive = readActiveEvent() != null
+            isEventActive = activeEvent != null,
+            isEventArmed = activeEvent == null && isAtCapacityEventArmingLevel()
         )
     }
 
@@ -193,6 +196,12 @@ class BatteryCapacityEstimator(private val context: Context) {
                             batteryPercent in (EVENT_LOW_PERCENT + 1) until EVENT_HIGH_PERCENT)
             else -> false
         }
+    }
+
+    private fun isAtCapacityEventArmingLevel(): Boolean {
+        val batteryPercent = prefs.getInt(LAST_BATTERY_PERCENT_KEY, UNKNOWN_PERCENT)
+        return batteryPercent != UNKNOWN_PERCENT &&
+                (batteryPercent <= EVENT_LOW_PERCENT || batteryPercent >= EVENT_HIGH_PERCENT)
     }
 
     private fun completeEvent(activeEvent: ActiveEvent, endChargeMah: Double) {
