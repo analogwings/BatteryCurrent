@@ -1646,6 +1646,8 @@ class BatteryCurrentService : Service() {
         private val plotBounds = RectF()
         private val rightAxisLabelHitRect = RectF()
         private val resetZoomHitRect = RectF()
+        private val minVisibleDurationMs = 60_000f
+        private val maxVisibleDurationMs = 24f * 60f * 60f * 1000f
 
         private data class TimeTickLabel(
             val x: Float,
@@ -1857,8 +1859,19 @@ class BatteryCurrentService : Service() {
         }
 
         private fun currentViewport(defaultStartMs: Long, defaultDurationMs: Float): Pair<Long, Float> {
-            val duration = customDurationMs ?: defaultDurationMs
-            val start = customStartMs ?: defaultStartMs
+            val customStart = customStartMs
+            val customDuration = customDurationMs
+            if (customStart != null && customDuration != null) {
+                return clampViewport(customStart, customDuration)
+            }
+
+            val duration = defaultDurationMs.coerceIn(minVisibleDurationMs, maxVisibleDurationMs)
+            val latestMs = points.lastOrNull()?.timestampMs ?: defaultStartMs
+            val start = if (latestMs - defaultStartMs > duration.toLong()) {
+                latestMs - duration.toLong()
+            } else {
+                defaultStartMs
+            }
             return clampViewport(start, duration)
         }
 
@@ -1868,9 +1881,7 @@ class BatteryCurrentService : Service() {
             val earliestMs = (zeroTimestampMs.takeIf { it > 0L } ?: points.first().timestampMs)
                 .coerceAtMost(points.first().timestampMs)
             val latestMs = points.last().timestampMs
-            val minDurationMs = 60_000f
-            val maxDurationMs = 24f * 60f * 60f * 1000f
-            val clampedDuration = durationMs.coerceIn(minDurationMs, maxDurationMs)
+            val clampedDuration = durationMs.coerceIn(minVisibleDurationMs, maxVisibleDurationMs)
             val latestStartMs = latestMs - clampedDuration.toLong()
             val clampedStart = if (latestStartMs <= earliestMs) {
                 earliestMs
@@ -1895,7 +1906,7 @@ class BatteryCurrentService : Service() {
             if (plotBounds.width() <= 0f) return
 
             val zoomRatio = (gestureStartDistance / pointerDistance(event).coerceAtLeast(1f)).coerceIn(0.15f, 8f)
-            var nextDuration = (gestureStartVisibleDurationMs * zoomRatio).coerceIn(60_000f, 24f * 60f * 60f * 1000f)
+            var nextDuration = (gestureStartVisibleDurationMs * zoomRatio).coerceIn(minVisibleDurationMs, maxVisibleDurationMs)
             val startFraction = ((gestureStartMidX - plotBounds.left) / plotBounds.width()).coerceIn(0f, 1f)
             val timeAtMidpoint = gestureStartVisibleStartMs + (gestureStartVisibleDurationMs * startFraction).toLong()
             val dragDeltaMs = ((pointerMidX(event) - gestureStartMidX) / plotBounds.width() * nextDuration).toLong()
