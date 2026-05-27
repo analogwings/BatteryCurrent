@@ -1739,6 +1739,18 @@ class BatteryCurrentService : Service() {
             strokeWidth = 2f
             pathEffect = DashPathEffect(floatArrayOf(10f, 8f), 0f)
         }
+        private val batteryLowThresholdPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.argb(105, 230, 95, 95)
+            style = Paint.Style.STROKE
+            strokeWidth = 2.5f
+            pathEffect = DashPathEffect(floatArrayOf(12f, 10f), 0f)
+        }
+        private val batteryHighThresholdPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.argb(105, 82, 190, 128)
+            style = Paint.Style.STROKE
+            strokeWidth = 2.5f
+            pathEffect = DashPathEffect(floatArrayOf(12f, 10f), 0f)
+        }
         private val axisTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = Color.argb(220, 255, 255, 255)
             textSize = 28f
@@ -2131,6 +2143,8 @@ class BatteryCurrentService : Service() {
         ) {
             if (scale == null) return
 
+            drawBatteryThresholdLines(canvas, scale)
+
             val rightAxisPoints = buildRightAxisTracePoints(visiblePoints, startMs, visibleDurationMs, scale)
             if (rightAxisPoints.size < 2) return
 
@@ -2141,6 +2155,15 @@ class BatteryCurrentService : Service() {
                 canvas.drawLine(previous.x, previous.y, current.x, current.y, batteryLinePaint)
             }
             drawRightAxisZeroLine(canvas, scale)
+        }
+
+        private fun drawBatteryThresholdLines(canvas: Canvas, scale: RightAxisScale) {
+            if (rightAxisMode != RightAxisMode.BATTERY) return
+
+            val lowY = yForRightAxisValue(25.0, scale)
+            val highY = yForRightAxisValue(75.0, scale)
+            canvas.drawLine(plotBounds.left, lowY, plotBounds.right, lowY, batteryLowThresholdPaint)
+            canvas.drawLine(plotBounds.left, highY, plotBounds.right, highY, batteryHighThresholdPaint)
         }
 
         private fun rightAxisTraceColor(value: Double): Int {
