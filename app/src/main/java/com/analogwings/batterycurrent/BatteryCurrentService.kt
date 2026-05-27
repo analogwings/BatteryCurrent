@@ -27,6 +27,7 @@ import android.provider.Settings
 import android.text.SpannableString
 import android.text.Spanned
 import android.text.style.ForegroundColorSpan
+import android.text.SpannedString
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
@@ -111,11 +112,10 @@ class BatteryCurrentService : Service() {
     private val temperatureUnitKey = "temperature_unit"
     private val rightAxisModeKey = "right_axis_mode"
 
-    // Overlay display styling. Direction is shown by the pill background.
+    // Overlay display styling follows the graph popup palette.
     private val overlayTextColor = Color.WHITE
-    private val chargeBackgroundColor = Color.argb(225, 40, 150, 75)
-    private val dischargeBackgroundColor = Color.argb(225, 200, 55, 55)
-    private val idleBackgroundColor = Color.argb(215, 0, 50, 240)
+    private val overlayDarkBackgroundColor = Color.argb(235, 24, 26, 33)
+    private val overlayLightBackgroundColor = Color.argb(235, 245, 248, 244)
     private val graphChargeTextColor = Color.rgb(82, 220, 135)
     private val graphDischargeTextColor = Color.rgb(245, 105, 105)
     private val graphWarmTextColor = Color.rgb(255, 190, 70)
@@ -137,7 +137,7 @@ class BatteryCurrentService : Service() {
     private var latestBatteryPercentHasFraction = false
     private var capacityDisplayState = BatteryCapacityEstimator.DisplayState(null, null, false, false)
     private var graphOverlayCreatedAtMs = 0L
-    private var lastDisplay = CurrentDisplay("Starting...", idleBackgroundColor)
+    private var lastDisplay = CurrentDisplay(SpannedString("Starting..."))
     private var isUpdateScheduled = false
 
     private val updateRunnable = object : Runnable {
@@ -209,7 +209,7 @@ class BatteryCurrentService : Service() {
             val reading = readBatteryCurrentMilliAmps(batteryStatus)
             val temperatureC = readBatteryTemperatureC(batteryStatus)
             if (reading == null) {
-                CurrentDisplay("Unsupported", idleBackgroundColor)
+                CurrentDisplay(SpannedString("Unsupported"))
             } else {
                 val voltageMv = readBatteryVoltageMillivolts(batteryStatus)
                 latestVoltageMv = voltageMv
@@ -221,14 +221,13 @@ class BatteryCurrentService : Service() {
                 addSampleAndFormat(reading, temperatureC, voltageMv, batteryStatus)
             }
         } catch (_: Exception) {
-            CurrentDisplay("Unavailable", idleBackgroundColor)
+            CurrentDisplay(SpannedString("Unavailable"))
         }
         lastDisplay = display
 
         overlayView?.apply {
             text = display.text
-            setTextColor(overlayTextColor)
-            background = pillBackground(display.backgroundColor)
+            background = pillBackground()
         }
 
         updateGraphOverlay()
@@ -393,8 +392,7 @@ class BatteryCurrentService : Service() {
     }
 
     private data class CurrentDisplay(
-        val text: String,
-        val backgroundColor: Int
+        val text: CharSequence
     )
 
     private data class BatteryPercentReading(
@@ -457,15 +455,8 @@ class BatteryCurrentService : Service() {
         latestRoundedMilliAmps = rounded
         latestTemperatureC = temperatureC
 
-        val backgroundColor = when {
-            rounded > 0 -> chargeBackgroundColor
-            rounded < 0 -> dischargeBackgroundColor
-            else -> idleBackgroundColor
-        }
-
         return CurrentDisplay(
-            text = buildFloatingDisplayText(now),
-            backgroundColor = backgroundColor
+            text = buildFloatingDisplayText(now)
         )
     }
 
@@ -644,7 +635,7 @@ class BatteryCurrentService : Service() {
         return String.format(Locale.US, "%d:%02d:%02d", hours, minutes, seconds)
     }
 
-    private fun buildFloatingDisplayText(now: Long): String {
+    private fun buildFloatingDisplayText(now: Long): SpannableString {
         val parts = ArrayList<String>()
 
         if (isDisplayFieldEnabled(displayTimeKey)) {
@@ -666,7 +657,8 @@ class BatteryCurrentService : Service() {
             parts.add(formatBatteryPercentText())
         }
 
-        return parts.takeIf { it.isNotEmpty() }?.joinToString(" ") ?: formatCurrentText()
+        val text = parts.takeIf { it.isNotEmpty() }?.joinToString(" ") ?: formatCurrentText()
+        return styleLiveDisplayText(text)
     }
 
     private fun buildFullLiveDisplayText(now: Long): String {
@@ -777,10 +769,16 @@ class BatteryCurrentService : Service() {
             .apply()
     }
 
-    private fun pillBackground(backgroundColor: Int): GradientDrawable {
+    private fun isLightOverlayEnabled(): Boolean {
+        return OverlayThemePreference.isLightBackgroundEnabled(this)
+    }
+
+    private fun pillBackground(): GradientDrawable {
+        val light = isLightOverlayEnabled()
         return GradientDrawable().apply {
             shape = GradientDrawable.RECTANGLE
-            setColor(backgroundColor)
+            setColor(if (light) overlayLightBackgroundColor else overlayDarkBackgroundColor)
+            setStroke(2, if (light) Color.argb(130, 20, 24, 30) else Color.argb(125, 255, 255, 255))
             cornerRadius = 44f
         }
     }
@@ -796,7 +794,7 @@ class BatteryCurrentService : Service() {
             textSize = 13f
             typeface = Typeface.DEFAULT_BOLD
             setTextColor(overlayTextColor)
-            background = pillBackground(lastDisplay.backgroundColor)
+            background = pillBackground()
             setPadding(24, 10, 24, 10)
             minWidth = 128
             gravity = Gravity.CENTER
@@ -1595,27 +1593,39 @@ class BatteryCurrentService : Service() {
     }
 
     private fun buildLiveSummary(now: Long): SpannableString {
-        val currentText = formatCurrentText()
-        val temperatureText = formatTemperatureText()
-        val energyText = formatSelectedEnergy()
-        val text = buildGraphLiveDisplayText(now)
+        return styleLiveDisplayText(buildGraphLiveDisplayText(now))
+    }
+
+    private fun styleLiveDisplayText(text: String): SpannableString {
         val summary = SpannableString(text)
+        val light = isLightOverlayEnabled()
+        val neutralColor = if (light) Color.rgb(28, 31, 36) else overlayTextColor
+        val chargeTextColor = if (light) Color.rgb(20, 125, 70) else graphChargeTextColor
+        val dischargeTextColor = if (light) Color.rgb(185, 45, 45) else graphDischargeTextColor
+        val warmTextColor = if (light) Color.rgb(190, 105, 0) else graphWarmTextColor
+        val coolTextColor = if (light) Color.rgb(20, 125, 70) else graphCoolTextColor
         val chargeColor = if ((latestRoundedMilliAmps ?: 0) >= 0) {
-            graphChargeTextColor
+            chargeTextColor
         } else {
-            graphDischargeTextColor
+            dischargeTextColor
         }
         val temperatureColor = latestTemperatureC?.let { temperature ->
             when {
-                temperature > 40.0 -> graphDischargeTextColor
-                temperature >= 30.0 -> graphWarmTextColor
-                else -> graphCoolTextColor
+                temperature > 40.0 -> dischargeTextColor
+                temperature >= 30.0 -> warmTextColor
+                else -> coolTextColor
             }
-        } ?: Color.WHITE
+        } ?: neutralColor
 
-        summary.colorSpan(energyText, chargeColor)
-        summary.colorSpan(currentText, chargeColor)
-        summary.colorSpan(temperatureText, temperatureColor)
+        summary.setSpan(
+            ForegroundColorSpan(neutralColor),
+            0,
+            summary.length,
+            Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+        )
+        summary.colorSpan(formatCurrentText(), chargeColor)
+        summary.colorSpan(formatSelectedEnergy(), chargeColor)
+        summary.colorSpan(formatTemperatureText(), temperatureColor)
         return summary
     }
 

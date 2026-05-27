@@ -60,12 +60,16 @@ class MainActivity : ComponentActivity() {
                 ) {
                     BatteryCurrentScreen(
                         initialTemporaryProEnabled = ProFeatureGate.isTemporaryProEnabled(this),
+                        initialLightOverlayEnabled = OverlayThemePreference.isLightBackgroundEnabled(this),
                         initialOriginalCapacityMah = BatteryCapacityReference.originalCapacityMah(this),
                         initialShowCapacityPrompt = !BatteryCapacityReference.hasSeenPrompt(this),
                         onStart = { requestPermissionThenStart() },
                         onStop = { stopBatteryService() },
                         onTemporaryProChanged = { enabled ->
                             ProFeatureGate.setTemporaryProEnabled(this, enabled)
+                        },
+                        onLightOverlayChanged = { enabled ->
+                            OverlayThemePreference.setLightBackgroundEnabled(this, enabled)
                         },
                         onOriginalCapacityChanged = { capacityMah ->
                             BatteryCapacityReference.saveOriginalCapacityMah(this, capacityMah)
@@ -150,15 +154,18 @@ class MainActivity : ComponentActivity() {
 @Composable
 private fun BatteryCurrentScreen(
     initialTemporaryProEnabled: Boolean,
+    initialLightOverlayEnabled: Boolean,
     initialOriginalCapacityMah: Int?,
     initialShowCapacityPrompt: Boolean,
     onStart: () -> Unit,
     onStop: () -> Unit,
     onTemporaryProChanged: (Boolean) -> Unit,
+    onLightOverlayChanged: (Boolean) -> Unit,
     onOriginalCapacityChanged: (Int?) -> Unit,
     onOriginalCapacitySkipped: () -> Unit
 ) {
     var temporaryProEnabled by remember { mutableStateOf(initialTemporaryProEnabled) }
+    var lightOverlayEnabled by remember { mutableStateOf(initialLightOverlayEnabled) }
     var originalCapacityMah by remember { mutableStateOf(initialOriginalCapacityMah) }
     var showCapacityDialog by remember { mutableStateOf(initialShowCapacityPrompt) }
 
@@ -221,6 +228,27 @@ private fun BatteryCurrentScreen(
                 onCheckedChange = { enabled ->
                     temporaryProEnabled = enabled
                     onTemporaryProChanged(enabled)
+                }
+            )
+        }
+
+        Spacer(modifier = Modifier.height(12.dp))
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Text(
+                text = "Light foreground background",
+                style = MaterialTheme.typography.bodyLarge,
+                fontWeight = FontWeight.Medium
+            )
+            Switch(
+                checked = lightOverlayEnabled,
+                onCheckedChange = { enabled ->
+                    lightOverlayEnabled = enabled
+                    onLightOverlayChanged(enabled)
                 }
             )
         }
