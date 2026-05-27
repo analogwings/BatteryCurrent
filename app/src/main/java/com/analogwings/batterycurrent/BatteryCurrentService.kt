@@ -658,7 +658,7 @@ class BatteryCurrentService : Service() {
         }
 
         val text = parts.takeIf { it.isNotEmpty() }?.joinToString(" ") ?: formatCurrentText()
-        return styleLiveDisplayText(text)
+        return styleLiveDisplayText(text, useLightOverlayPalette = isLightOverlayEnabled())
     }
 
     private fun buildFullLiveDisplayText(now: Long): String {
@@ -1593,17 +1593,16 @@ class BatteryCurrentService : Service() {
     }
 
     private fun buildLiveSummary(now: Long): SpannableString {
-        return styleLiveDisplayText(buildGraphLiveDisplayText(now))
+        return styleLiveDisplayText(buildGraphLiveDisplayText(now), useLightOverlayPalette = false)
     }
 
-    private fun styleLiveDisplayText(text: String): SpannableString {
+    private fun styleLiveDisplayText(text: String, useLightOverlayPalette: Boolean): SpannableString {
         val summary = SpannableString(text)
-        val light = isLightOverlayEnabled()
-        val neutralColor = if (light) Color.rgb(28, 31, 36) else overlayTextColor
-        val chargeTextColor = if (light) Color.rgb(20, 125, 70) else graphChargeTextColor
-        val dischargeTextColor = if (light) Color.rgb(185, 45, 45) else graphDischargeTextColor
-        val warmTextColor = if (light) Color.rgb(190, 105, 0) else graphWarmTextColor
-        val coolTextColor = if (light) Color.rgb(20, 125, 70) else graphCoolTextColor
+        val neutralColor = if (useLightOverlayPalette) Color.rgb(28, 31, 36) else overlayTextColor
+        val chargeTextColor = if (useLightOverlayPalette) Color.rgb(20, 125, 70) else graphChargeTextColor
+        val dischargeTextColor = if (useLightOverlayPalette) Color.rgb(185, 45, 45) else graphDischargeTextColor
+        val warmTextColor = if (useLightOverlayPalette) Color.rgb(190, 105, 0) else graphWarmTextColor
+        val coolTextColor = if (useLightOverlayPalette) Color.rgb(20, 125, 70) else graphCoolTextColor
         val chargeColor = if ((latestRoundedMilliAmps ?: 0) >= 0) {
             chargeTextColor
         } else {
