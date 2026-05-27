@@ -16,6 +16,12 @@ class BatteryCapacityEstimator(private val context: Context) {
         val isEventActive: Boolean
     )
 
+    data class DailyEstimateSummary(
+        val timestampMs: Long,
+        val averageCapacityMah: Int,
+        val sampleCount: Int
+    )
+
     private data class ActiveEvent(
         val direction: Int,
         val startTimestampMs: Long,
@@ -89,6 +95,18 @@ class BatteryCapacityEstimator(private val context: Context) {
             warningText = buildWarningText(),
             isEventActive = readActiveEvent() != null
         )
+    }
+
+    fun recentDailyEstimates(limit: Int = 10): List<DailyEstimateSummary> {
+        return readReadings()
+            .takeLast(limit.coerceAtLeast(1))
+            .map { reading ->
+                DailyEstimateSummary(
+                    timestampMs = reading.timestampMs,
+                    averageCapacityMah = reading.averageCapacityMah,
+                    sampleCount = reading.sampleCount
+                )
+            }
     }
 
     private fun processEventSample(

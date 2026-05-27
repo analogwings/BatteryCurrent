@@ -38,6 +38,8 @@ import androidx.core.app.NotificationManagerCompat
 import androidx.core.app.NotificationCompat
 import java.util.ArrayDeque
 import java.util.ArrayList
+import java.text.SimpleDateFormat
+import java.util.Date
 import java.util.Locale
 import kotlin.math.abs
 import kotlin.math.ceil
@@ -74,6 +76,7 @@ class BatteryCurrentService : Service() {
     private var windowManager: WindowManager? = null
     private var overlayView: TextView? = null
     private var graphOverlayView: LinearLayout? = null
+    private var capacityHistoryPopupView: View? = null
     private val capacityEstimator by lazy { BatteryCapacityEstimator(this) }
 
     // Keep the foreground notification quiet/static so the status-bar icon does not flash.
@@ -1072,6 +1075,12 @@ class BatteryCurrentService : Service() {
                 textSize = 12f
                 gravity = Gravity.CENTER
                 visibility = View.GONE
+                isClickable = true
+                setOnClickListener {
+                    if (ProFeatureGate.isProEnabled(this@BatteryCurrentService)) {
+                        showCapacityHistoryPopup()
+                    }
+                }
             })
 
             addView(LinearLayout(this@BatteryCurrentService).apply {
@@ -1121,8 +1130,11 @@ class BatteryCurrentService : Service() {
         if (estimateMah != null) {
             estimateView?.text = buildCapacityEstimateText(estimateMah)
             estimateView?.visibility = View.VISIBLE
+            estimateView?.isEnabled = true
         } else {
             estimateView?.visibility = View.GONE
+            estimateView?.isEnabled = false
+            removeCapacityHistoryPopup()
         }
 
         val warningText = capacityDisplayState.warningText
@@ -1164,6 +1176,111 @@ class BatteryCurrentService : Service() {
             reductionPercent > 10.0 -> graphWarmTextColor
             else -> graphCoolTextColor
         }
+    }
+
+    private fun showCapacityHistoryPopup() {
+        if (!ProFeatureGate.isProEnabled(this)) return
+        val graphContainer = graphOverlayView ?: return
+        if (capacityHistoryPopupView != null) {
+            removeCapacityHistoryPopup()
+            return
+        }
+
+        val rows = capacityEstimator.recentDailyEstimates(10)
+        val dateFormat = SimpleDateFormat("MMM d, yyyy", Locale.US)
+        val popup = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = GradientDrawable().apply {
+                cornerRadius = 18f
+                setColor(Color.argb(238, 24, 27, 32))
+                setStroke(2, Color.argb(190, 255, 255, 255))
+            }
+            setPadding(18, 14, 18, 14)
+            elevation = 28f
+
+            addView(LinearLayout(this@BatteryCurrentService).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                addView(TextView(this@BatteryCurrentService).apply {
+                    text = "Last 10 capacity estimates"
+                    textSize = 13f
+                    setTypeface(typeface, Typeface.BOLD)
+                    setTextColor(Color.WHITE)
+                }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+                addView(Button(this@BatteryCurrentService).apply {
+                    styleCloseButton(this)
+                    text = "x"
+                    setOnClickListener { removeCapacityHistoryPopup() }
+                })
+            })
+
+            addCapacityHistoryRow("Date", "mAh", "#records", isHeader = true)
+            if (rows.isEmpty()) {
+                addView(TextView(this@BatteryCurrentService).apply {
+                    text = "No daily estimates yet"
+                    textSize = 12f
+                    setTextColor(Color.argb(220, 255, 255, 255))
+                    gravity = Gravity.CENTER
+                    setPadding(0, 14, 0, 4)
+                })
+            } else {
+                rows.forEach { row ->
+                    addCapacityHistoryRow(
+                        dateFormat.format(Date(row.timestampMs)),
+                        row.averageCapacityMah.toString(),
+                        row.sampleCount.toString()
+                    )
+                }
+            }
+        }
+
+        capacityHistoryPopupView = popup
+        val insertIndex = (graphContainer.childCount - 1).coerceAtLeast(0)
+        graphContainer.addView(popup, insertIndex, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT
+        ).apply {
+            setMargins(0, 10, 0, 4)
+        })
+    }
+
+    private fun LinearLayout.addCapacityHistoryRow(
+        dateText: String,
+        capacityText: String,
+        countText: String,
+        isHeader: Boolean = false
+    ) {
+        addView(LinearLayout(this@BatteryCurrentService).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, if (isHeader) 10 else 3, 0, 3)
+
+            addCapacityHistoryCell(dateText, 1.9f, Gravity.START, isHeader)
+            addCapacityHistoryCell(capacityText, 1.0f, Gravity.END, isHeader)
+            addCapacityHistoryCell(countText, 1.0f, Gravity.END, isHeader)
+        })
+    }
+
+    private fun LinearLayout.addCapacityHistoryCell(
+        value: String,
+        weight: Float,
+        gravityValue: Int,
+        isHeader: Boolean
+    ) {
+        addView(TextView(this@BatteryCurrentService).apply {
+            text = value
+            textSize = if (isHeader) 11f else 12f
+            setTextColor(if (isHeader) graphEstimateLabelColor else Color.WHITE)
+            setTypeface(Typeface.MONOSPACE, if (isHeader) Typeface.BOLD else Typeface.NORMAL)
+            gravity = gravityValue
+            setSingleLine(true)
+        }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, weight))
+    }
+
+    private fun removeCapacityHistoryPopup() {
+        val view = capacityHistoryPopupView ?: return
+        (view.parent as? LinearLayout)?.removeView(view)
+        capacityHistoryPopupView = null
     }
 
     private fun createDisplayTogglePanel(): LinearLayout {
@@ -1437,6 +1554,7 @@ class BatteryCurrentService : Service() {
     }
 
     private fun removeGraphOverlay() {
+        removeCapacityHistoryPopup()
         val view = graphOverlayView ?: return
         try {
             windowManager?.removeView(view)
@@ -1457,6 +1575,7 @@ class BatteryCurrentService : Service() {
     }
 
     private fun removeOverlay() {
+        removeCapacityHistoryPopup()
         removeGraphOverlay()
         val view = overlayView
         if (view != null) {
