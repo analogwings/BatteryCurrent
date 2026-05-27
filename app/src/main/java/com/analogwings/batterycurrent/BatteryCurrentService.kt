@@ -77,6 +77,7 @@ class BatteryCurrentService : Service() {
     private var overlayView: TextView? = null
     private var graphOverlayView: LinearLayout? = null
     private var capacityHistoryPopupView: View? = null
+    private var graphMenuCollapsed = false
     private val capacityEstimator by lazy { BatteryCapacityEstimator(this) }
 
     // Keep the foreground notification quiet/static so the status-bar icon does not flash.
@@ -991,6 +992,8 @@ class BatteryCurrentService : Service() {
                 addView(graphView, LinearLayout.LayoutParams(878, 594))
             })
 
+            addView(createGraphMenuCollapseToggle())
+
             addView(createDisplayTogglePanel())
 
             addView(createGraphActionPanel())
@@ -1035,8 +1038,8 @@ class BatteryCurrentService : Service() {
         val container = graphOverlayView ?: return
         val summaryView = container.getChildAt(1) as? TextView ?: return
         val graphView = ((container.getChildAt(2) as? LinearLayout)?.getChildAt(0) as? EnergyGraphView) ?: return
-        val capacityPanel = container.getChildAt(5) as? LinearLayout
-        val versionView = container.getChildAt(6) as? TextView
+        val capacityPanel = container.getChildAt(6) as? LinearLayout
+        val versionView = container.getChildAt(container.childCount - 1) as? TextView
 
         val now = System.currentTimeMillis()
         capacityDisplayState = capacityEstimator.displayState()
@@ -1049,8 +1052,51 @@ class BatteryCurrentService : Service() {
             isFahrenheitSelected()
         )
         updateCapacityEstimatePanel(capacityPanel)
+        updateGraphMenuVisibility(container)
         updateVersionIndicator(versionView, now)
         updateGraphZoomResetButton()
+    }
+
+    private fun createGraphMenuCollapseToggle(): LinearLayout {
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.END
+            setPadding(0, 0, 14, 0)
+            addView(TextView(this@BatteryCurrentService).apply {
+                textSize = 13f
+                setTypeface(typeface, Typeface.BOLD)
+                setTextColor(Color.rgb(255, 220, 35))
+                gravity = Gravity.CENTER
+                minWidth = 72
+                minHeight = 44
+                includeFontPadding = false
+                setPadding(22, 6, 22, 6)
+                text = if (graphMenuCollapsed) "\u25BC" else "\u25B2"
+                isClickable = true
+                setOnClickListener {
+                    graphMenuCollapsed = !graphMenuCollapsed
+                    removeCapacityHistoryPopup()
+                    updateGraphOverlay()
+                }
+            })
+        }
+    }
+
+    private fun updateGraphMenuVisibility(container: LinearLayout) {
+        val toggleText = (container.getChildAt(3) as? LinearLayout)?.getChildAt(0) as? TextView
+        toggleText?.text = if (graphMenuCollapsed) "\u25BC" else "\u25B2"
+
+        container.childAtOrNull(4)?.visibility = if (graphMenuCollapsed) View.GONE else View.VISIBLE
+        container.childAtOrNull(5)?.visibility = if (graphMenuCollapsed) View.GONE else View.VISIBLE
+        if (graphMenuCollapsed) {
+            container.childAtOrNull(6)?.visibility = View.GONE
+        }
+        container.childAtOrNull(container.childCount - 1)?.visibility =
+            if (graphMenuCollapsed) View.GONE else View.VISIBLE
+    }
+
+    private fun LinearLayout.childAtOrNull(index: Int): View? {
+        return if (index in 0 until childCount) getChildAt(index) else null
     }
 
     private fun updateGraphZoomResetButton() {
