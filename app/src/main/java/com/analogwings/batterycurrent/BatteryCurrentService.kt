@@ -58,6 +58,7 @@ class BatteryCurrentService : Service() {
         private const val TEMPERATURE_UNIT_F = "F"
         private const val CALIBRATION_DOT_BLINK_MS = 1000L
         private const val GRAPH_BLINK_UPDATE_MS = 1000L
+        private const val FOREGROUND_INDICATOR_UPDATE_MS = 1000L
         private const val RIGHT_AXIS_BATTERY = "battery"
         private const val RIGHT_AXIS_TEMPERATURE = "temperature"
         private const val RIGHT_AXIS_VOLTAGE = "voltage"
@@ -152,6 +153,14 @@ class BatteryCurrentService : Service() {
             if (graphOverlayView == null) return
             updateGraphOverlay()
             handler.postDelayed(this, GRAPH_BLINK_UPDATE_MS)
+        }
+    }
+
+    private val foregroundIndicatorRunnable = object : Runnable {
+        override fun run() {
+            if (overlayView == null) return
+            refreshFloatingOverlayText()
+            handler.postDelayed(this, FOREGROUND_INDICATOR_UPDATE_MS)
         }
     }
 
@@ -658,7 +667,29 @@ class BatteryCurrentService : Service() {
         }
 
         val text = parts.takeIf { it.isNotEmpty() }?.joinToString(" ") ?: formatCurrentText()
-        return styleLiveDisplayText(text, useLightOverlayPalette = isLightOverlayEnabled())
+        val dotColor = foregroundCapacityStatusDotColor(now)
+        val displayText = if (dotColor == null) text else "$text \u2022"
+        return styleLiveDisplayText(displayText, useLightOverlayPalette = isLightOverlayEnabled()).apply {
+            if (dotColor != null) {
+                setSpan(
+                    ForegroundColorSpan(dotColor),
+                    displayText.length - 1,
+                    displayText.length,
+                    Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+                )
+            }
+        }
+    }
+
+    private fun foregroundCapacityStatusDotColor(now: Long): Int? {
+        return when {
+            capacityDisplayState.isEventActive -> {
+                val showDot = ((now - graphOverlayCreatedAtMs.coerceAtLeast(sessionStartMs)) / CALIBRATION_DOT_BLINK_MS) % 2L == 0L
+                if (showDot) graphCoolTextColor else Color.TRANSPARENT
+            }
+            capacityDisplayState.isEventArmed -> Color.rgb(255, 220, 35)
+            else -> null
+        }
     }
 
     private fun buildFullLiveDisplayText(now: Long): String {
@@ -875,6 +906,8 @@ class BatteryCurrentService : Service() {
 
         try {
             windowManager?.addView(overlayView, params)
+            handler.removeCallbacks(foregroundIndicatorRunnable)
+            handler.postDelayed(foregroundIndicatorRunnable, FOREGROUND_INDICATOR_UPDATE_MS)
         } catch (_: Exception) {
             overlayView = null
         }
@@ -1589,7 +1622,10 @@ class BatteryCurrentService : Service() {
         val now = System.currentTimeMillis()
         val text = buildFloatingDisplayText(now)
         lastDisplay = lastDisplay.copy(text = text)
-        overlayView?.text = text
+        overlayView?.apply {
+            this.text = text
+            background = pillBackground()
+        }
     }
 
     private fun buildLiveSummary(now: Long): SpannableString {
@@ -1672,6 +1708,7 @@ class BatteryCurrentService : Service() {
             }
         }
         overlayView = null
+        handler.removeCallbacks(foregroundIndicatorRunnable)
         windowManager = null
     }
 
@@ -1749,6 +1786,7 @@ class BatteryCurrentService : Service() {
         isUpdateScheduled = false
         persistEnergyTracking()
         removeOverlay()
+        handler.removeCallbacks(foregroundIndicatorRunnable)
         recentMilliAmpSamples.clear()
         energyHistory.clear()
         super.onDestroy()
