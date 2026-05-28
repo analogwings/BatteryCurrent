@@ -92,10 +92,9 @@ class BatteryCapacityEstimator(private val context: Context) {
     }
 
     fun clearWarning() {
-        latestCapacityWindow()?.let { window ->
+        readMovingAverageSnapshots().lastOrNull()?.let { snapshot ->
             prefs.edit()
-                .putLong(WARNING_REFERENCE_TIMESTAMP_KEY, window.timestampMs)
-                .putInt(WARNING_REFERENCE_CAPACITY_KEY, window.averageCapacityMah)
+                .putInt(ACKNOWLEDGED_WARNING_READING_COUNT_KEY, snapshot.totalReadingCount)
                 .apply()
         }
     }
@@ -103,7 +102,7 @@ class BatteryCapacityEstimator(private val context: Context) {
     fun displayState(): DisplayState {
         val activeEvent = readActiveEvent()
         return DisplayState(
-            estimateMah = latestMovingAverageEstimate() ?: latestDailyEstimate(),
+            estimateMah = recentDailyWeightedEstimate() ?: latestDailyEstimate(),
             warningText = buildWarningText(),
             isEventActive = activeEvent != null,
             isEventArmed = activeEvent == null && isAtCapacityEventArmingLevel()
@@ -310,6 +309,15 @@ class BatteryCapacityEstimator(private val context: Context) {
         return readReadings().lastOrNull()?.averageCapacityMah
     }
 
+    private fun recentDailyWeightedEstimate(limit: Int = 10): Int? {
+        val readings = readReadings().takeLast(limit.coerceAtLeast(1))
+        val totalCount = readings.sumOf { it.sampleCount }
+        if (totalCount <= 0) return null
+
+        val weightedTotal = readings.sumOf { it.averageCapacityMah.toLong() * it.sampleCount.toLong() }
+        return (weightedTotal.toDouble() / totalCount).roundToInt()
+    }
+
     private fun appendMovingAverageReading(timestampMs: Long, capacityMah: Int) {
         val samples = readMovingAverageSamples().toMutableList()
         samples.add(capacityMah)
@@ -370,20 +378,17 @@ class BatteryCapacityEstimator(private val context: Context) {
     }
 
     private fun buildWarningText(): String? {
-        val window = latestCapacityWindow() ?: return null
-        val referenceCapacity = prefs.getInt(WARNING_REFERENCE_CAPACITY_KEY, 0)
-        val referenceTimestamp = prefs.getLong(WARNING_REFERENCE_TIMESTAMP_KEY, 0L)
-        if (referenceCapacity <= 0) {
-            prefs.edit()
-                .putLong(WARNING_REFERENCE_TIMESTAMP_KEY, window.timestampMs)
-                .putInt(WARNING_REFERENCE_CAPACITY_KEY, window.averageCapacityMah)
-                .apply()
-            return null
-        }
+        val snapshots = readMovingAverageSnapshots()
+        if (snapshots.size < 2) return null
 
-        val nextWarningCapacity = referenceCapacity * (1.0 - WARNING_DROP_FRACTION)
-        return if (window.averageCapacityMah <= nextWarningCapacity) {
-            "Battery capacity dropped by more than 1% since ${formatDate(referenceTimestamp)}"
+        val previous = snapshots[snapshots.lastIndex - 1]
+        val current = snapshots.last()
+        val acknowledgedCount = prefs.getInt(ACKNOWLEDGED_WARNING_READING_COUNT_KEY, 0)
+        if (current.totalReadingCount <= acknowledgedCount) return null
+
+        val nextWarningCapacity = previous.movingAverageMah * (1.0 - WARNING_DROP_FRACTION)
+        return if (current.movingAverageMah <= nextWarningCapacity) {
+            "Battery capacity dropped by more than 1% since ${formatDate(previous.timestampMs)}"
         } else {
             null
         }
@@ -480,6 +485,7 @@ class BatteryCapacityEstimator(private val context: Context) {
         private const val UNKNOWN_PERCENT = -1
         private const val WARNING_REFERENCE_TIMESTAMP_KEY = "warning_reference_timestamp_ms"
         private const val WARNING_REFERENCE_CAPACITY_KEY = "warning_reference_capacity_mah"
+        private const val ACKNOWLEDGED_WARNING_READING_COUNT_KEY = "acknowledged_warning_reading_count"
         private const val MOVING_AVERAGE_SAMPLES_KEY = "moving_average_capacity_samples"
         private const val TOTAL_CAPACITY_READING_COUNT_KEY = "total_capacity_reading_count"
         private const val LATEST_MOVING_AVERAGE_KEY = "latest_moving_average_mah"

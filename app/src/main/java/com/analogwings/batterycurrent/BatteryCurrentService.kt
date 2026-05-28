@@ -45,6 +45,7 @@ import java.util.Locale
 import kotlin.math.abs
 import kotlin.math.ceil
 import kotlin.math.floor
+import kotlin.math.pow
 import kotlin.math.roundToInt
 
 class BatteryCurrentService : Service() {
@@ -954,7 +955,7 @@ class BatteryCurrentService : Service() {
                 val layoutParams = view.layoutParams as? WindowManager.LayoutParams
                     ?: return@setOnTouchListener false
 
-                when (event.action) {
+                when (event.actionMasked) {
                     MotionEvent.ACTION_DOWN -> {
                         initialX = layoutParams.x
                         initialY = layoutParams.y
@@ -963,7 +964,21 @@ class BatteryCurrentService : Service() {
                         true
                     }
 
+                    MotionEvent.ACTION_POINTER_DOWN -> {
+                        if (graphView.beginExternalZoomGesture(event, view)) {
+                            true
+                        } else {
+                            graphView.isZoomModeArmed()
+                        }
+                    }
+
                     MotionEvent.ACTION_MOVE -> {
+                        if (graphView.isZoomModeArmed()) {
+                            if (event.pointerCount >= 2) {
+                                graphView.updateExternalZoomGesture(event, view)
+                            }
+                            return@setOnTouchListener true
+                        }
                         val dx = (event.rawX - initialTouchX).toInt()
                         val dy = (event.rawY - initialTouchY).toInt()
                         layoutParams.x = initialX + dx
@@ -972,7 +987,12 @@ class BatteryCurrentService : Service() {
                         true
                     }
 
-                    MotionEvent.ACTION_UP -> true
+                    MotionEvent.ACTION_POINTER_UP,
+                    MotionEvent.ACTION_CANCEL,
+                    MotionEvent.ACTION_UP -> {
+                        graphView.endExternalZoomGesture()
+                        true
+                    }
                     else -> false
                 }
             }
@@ -1017,7 +1037,7 @@ class BatteryCurrentService : Service() {
             addView(LinearLayout(this@BatteryCurrentService).apply {
                 orientation = LinearLayout.VERTICAL
                 gravity = Gravity.CENTER
-                addView(graphView, LinearLayout.LayoutParams(878, 594))
+                addView(graphView, LinearLayout.LayoutParams(878, 654))
             })
 
             addView(createGraphMenuCollapseToggle())
@@ -1788,13 +1808,21 @@ class BatteryCurrentService : Service() {
         var onSingleFingerDragDelta: ((Int, Int) -> Unit)? = null
         private var customStartMs: Long? = null
         private var customDurationMs: Float? = null
+        private var customRightAxisMin: Double? = null
+        private var customRightAxisMax: Double? = null
+        private var activeZoomAxis: ZoomAxis? = null
         private var isViewportGestureActive = false
         private var isRightAxisLabelTouchActive = false
         private var gestureStartDistance = 0f
         private var gestureStartMidX = 0f
+        private var gestureStartMidY = 0f
         private var gestureStartVisibleStartMs = 0L
         private var gestureStartVisibleDurationMs = 0f
+        private var gestureStartRightAxisMin: Double? = null
+        private var gestureStartRightAxisMax: Double? = null
+        private var gestureSourceView: View? = null
         private var isSingleFingerDragActive = false
+        private var isZoomArmedTouchActive = false
         private var lastSingleRawX = 0f
         private var lastSingleRawY = 0f
         private val linePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -1880,10 +1908,26 @@ class BatteryCurrentService : Service() {
             color = Color.argb(230, 245, 248, 244)
             style = Paint.Style.FILL
         }
+        private val zoomButtonBackgroundPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.argb(235, 255, 215, 35)
+            style = Paint.Style.FILL
+        }
+        private val zoomButtonInactivePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.argb(220, 70, 76, 88)
+            style = Paint.Style.FILL
+        }
+        private val zoomButtonTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.WHITE
+            textSize = 50f
+            typeface = Typeface.DEFAULT_BOLD
+            textAlign = Paint.Align.CENTER
+        }
         private val fillPath = Path()
         private val plotBounds = RectF()
         private val rightAxisLabelHitRect = RectF()
         private val resetZoomHitRect = RectF()
+        private val xZoomButtonHitRect = RectF()
+        private val yZoomButtonHitRect = RectF()
         private val minVisibleDurationMs = 60_000f
         private val maxVisibleDurationMs = 24f * 60f * 60f * 1000f
 
@@ -1906,6 +1950,11 @@ class BatteryCurrentService : Service() {
             val range: Double = (max - min).coerceAtLeast(0.0001)
         }
 
+        private enum class ZoomAxis {
+            X,
+            Y
+        }
+
         fun setPoints(
             newPoints: List<EnergyPoint>,
             unit: String,
@@ -1917,6 +1966,13 @@ class BatteryCurrentService : Service() {
             points.addAll(newPoints)
             displayUnit = unit
             zeroTimestampMs = zeroTimeMs
+            if (rightAxisMode != newRightAxisMode) {
+                customRightAxisMin = null
+                customRightAxisMax = null
+                if (newRightAxisMode == null && activeZoomAxis == ZoomAxis.Y) {
+                    activeZoomAxis = null
+                }
+            }
             rightAxisMode = newRightAxisMode
             useFahrenheit = newUseFahrenheit
             invalidate()
@@ -1927,16 +1983,30 @@ class BatteryCurrentService : Service() {
                 MotionEvent.ACTION_DOWN -> {
                     isRightAxisLabelTouchActive = rightAxisMode != null && rightAxisLabelHitRect.contains(event.x, event.y)
                     val isResetZoomTouch = resetZoomHitRect.contains(event.x, event.y)
-                    isSingleFingerDragActive = !isRightAxisLabelTouchActive && !isResetZoomTouch && plotBounds.contains(event.x, event.y)
+                    val isXZoomButtonTouch = xZoomButtonHitRect.contains(event.x, event.y)
+                    val isYZoomButtonTouch = yZoomButtonHitRect.contains(event.x, event.y)
+                    isZoomArmedTouchActive = activeZoomAxis != null && plotBounds.contains(event.x, event.y)
+                    isSingleFingerDragActive = !isRightAxisLabelTouchActive &&
+                        !isResetZoomTouch &&
+                        !isXZoomButtonTouch &&
+                        !isYZoomButtonTouch &&
+                        !isZoomArmedTouchActive &&
+                        activeZoomAxis == null &&
+                        plotBounds.contains(event.x, event.y)
                     lastSingleRawX = event.rawX
                     lastSingleRawY = event.rawY
-                    return isRightAxisLabelTouchActive || isResetZoomTouch || isSingleFingerDragActive
+                    return isRightAxisLabelTouchActive ||
+                        isResetZoomTouch ||
+                        isXZoomButtonTouch ||
+                        isYZoomButtonTouch ||
+                        isZoomArmedTouchActive ||
+                        isSingleFingerDragActive
                 }
 
                 MotionEvent.ACTION_POINTER_DOWN -> {
-                    if (event.pointerCount >= 2 && isInsidePlot(event)) {
+                    if (activeZoomAxis != null && event.pointerCount >= 2 && isInsidePlot(event)) {
                         isSingleFingerDragActive = false
-                        beginViewportGesture(event)
+                        beginViewportGesture(event, this)
                         parent?.requestDisallowInterceptTouchEvent(true)
                         return true
                     }
@@ -1944,7 +2014,7 @@ class BatteryCurrentService : Service() {
 
                 MotionEvent.ACTION_MOVE -> {
                     if (event.pointerCount >= 2 && isViewportGestureActive) {
-                        updateViewportGesture(event)
+                        updateViewportGesture(event, gestureSourceView ?: this)
                         return true
                     }
                     if (event.pointerCount == 1 && isSingleFingerDragActive) {
@@ -1957,12 +2027,17 @@ class BatteryCurrentService : Service() {
                         }
                         return true
                     }
+                    if (event.pointerCount == 1 && isZoomArmedTouchActive) {
+                        return true
+                    }
                 }
 
                 MotionEvent.ACTION_POINTER_UP,
                 MotionEvent.ACTION_CANCEL -> {
                     isViewportGestureActive = false
+                    gestureSourceView = null
                     isSingleFingerDragActive = false
+                    isZoomArmedTouchActive = false
                     isRightAxisLabelTouchActive = false
                     parent?.requestDisallowInterceptTouchEvent(false)
                     return true
@@ -1974,25 +2049,65 @@ class BatteryCurrentService : Service() {
                         onViewportChanged?.invoke()
                         return true
                     }
+                    if (xZoomButtonHitRect.contains(event.x, event.y)) {
+                        activeZoomAxis = ZoomAxis.X
+                        invalidate()
+                        return true
+                    }
+                    if (yZoomButtonHitRect.contains(event.x, event.y)) {
+                        activeZoomAxis = ZoomAxis.Y
+                        invalidate()
+                        return true
+                    }
                     if (isRightAxisLabelTouchActive && rightAxisLabelHitRect.contains(event.x, event.y)) {
                         isRightAxisLabelTouchActive = false
                         onRightAxisLabelClick?.invoke()
                         return true
                     }
-                    val handledDrag = isSingleFingerDragActive
+                    val handledDrag = isSingleFingerDragActive || isZoomArmedTouchActive
                     isRightAxisLabelTouchActive = false
                     isSingleFingerDragActive = false
+                    isZoomArmedTouchActive = false
                     return handledDrag
                 }
             }
             return false
         }
 
-        fun hasCustomViewport(): Boolean = customStartMs != null && customDurationMs != null
+        fun hasCustomViewport(): Boolean =
+            (customStartMs != null && customDurationMs != null) ||
+                (customRightAxisMin != null && customRightAxisMax != null) ||
+                activeZoomAxis != null
+
+        fun isZoomModeArmed(): Boolean = activeZoomAxis != null
+
+        fun beginExternalZoomGesture(event: MotionEvent, sourceView: View): Boolean {
+            if (activeZoomAxis == null || event.pointerCount < 2) return false
+
+            beginViewportGesture(event, sourceView)
+            parent?.requestDisallowInterceptTouchEvent(true)
+            return true
+        }
+
+        fun updateExternalZoomGesture(event: MotionEvent, sourceView: View): Boolean {
+            if (!isViewportGestureActive || activeZoomAxis == null || event.pointerCount < 2) return false
+
+            updateViewportGesture(event, sourceView)
+            return true
+        }
+
+        fun endExternalZoomGesture() {
+            isViewportGestureActive = false
+            gestureSourceView = null
+            parent?.requestDisallowInterceptTouchEvent(false)
+        }
 
         fun resetViewport() {
             customStartMs = null
             customDurationMs = null
+            customRightAxisMin = null
+            customRightAxisMax = null
+            activeZoomAxis = null
             invalidate()
         }
 
@@ -2002,7 +2117,7 @@ class BatteryCurrentService : Service() {
             val left = 104f
             val top = 24f
             val right = width - 106f
-            val bottom = height - 82f
+            val bottom = height - 142f
             plotBounds.set(left, top, right, bottom)
 
             if (points.size < 2) {
@@ -2010,6 +2125,7 @@ class BatteryCurrentService : Service() {
                 drawAxes(canvas)
                 drawRightAxisUnitLabel(canvas)
                 drawResetZoomButton(canvas)
+                drawZoomAxisButtons(canvas)
                 return
             }
 
@@ -2033,7 +2149,7 @@ class BatteryCurrentService : Service() {
                 energyRange
             }
             val zeroY = yForEnergy(0.0, minEnergy, energyRange)
-            val rightAxisScale = chooseRightAxisScale(visiblePoints)
+            val rightAxisScale = applyCustomRightAxisScale(chooseRightAxisScale(visiblePoints))
 
             drawEnergyTicks(canvas, energyTicks, minEnergy, energyRange, energyStep)
             drawRightAxisTicks(canvas, rightAxisScale)
@@ -2080,6 +2196,7 @@ class BatteryCurrentService : Service() {
             drawRightAxisUnitLabel(canvas)
             drawRightAxisTicks(canvas, rightAxisScale)
             drawResetZoomButton(canvas)
+            drawZoomAxisButtons(canvas)
         }
 
         private fun chooseVisibleDurationMs(elapsedMs: Long): Float {
@@ -2129,34 +2246,77 @@ class BatteryCurrentService : Service() {
             return clampedStart to clampedDuration
         }
 
-        private fun beginViewportGesture(event: MotionEvent) {
+        private fun beginViewportGesture(event: MotionEvent, sourceView: View) {
             val defaultStartMs = zeroTimestampMs.takeIf { it > 0L } ?: points.firstOrNull()?.timestampMs ?: 0L
             val defaultDurationMs = chooseVisibleDurationMs((points.lastOrNull()?.timestampMs ?: defaultStartMs) - defaultStartMs)
             val viewport = currentViewport(defaultStartMs, defaultDurationMs)
             isViewportGestureActive = true
+            gestureSourceView = sourceView
             gestureStartDistance = pointerDistance(event).coerceAtLeast(1f)
-            gestureStartMidX = pointerMidX(event)
+            gestureStartMidX = pointerMidX(event, sourceView)
+            gestureStartMidY = pointerMidY(event, sourceView)
             gestureStartVisibleStartMs = viewport.first
             gestureStartVisibleDurationMs = viewport.second
+            val visiblePoints = points.filter { point ->
+                point.timestampMs >= viewport.first && point.timestampMs <= viewport.first + viewport.second.toLong()
+            }.ifEmpty { points }
+            val rightAxisScale = applyCustomRightAxisScale(chooseRightAxisScale(visiblePoints))
+            gestureStartRightAxisMin = rightAxisScale?.min
+            gestureStartRightAxisMax = rightAxisScale?.max
         }
 
-        private fun updateViewportGesture(event: MotionEvent) {
+        private fun updateViewportGesture(event: MotionEvent, sourceView: View) {
             if (plotBounds.width() <= 0f) return
 
-            val zoomRatio = (gestureStartDistance / pointerDistance(event).coerceAtLeast(1f)).coerceIn(0.15f, 8f)
+            val zoomRatio = scaleZoomRatio(
+                gestureStartDistance / pointerDistance(event).coerceAtLeast(1f)
+            )
+            when (activeZoomAxis) {
+                ZoomAxis.X -> updateTimeViewport(event, sourceView, zoomRatio)
+                ZoomAxis.Y -> updateRightAxisViewport(event, sourceView, zoomRatio)
+                null -> return
+            }
+            onViewportChanged?.invoke()
+            invalidate()
+        }
+
+        private fun updateTimeViewport(event: MotionEvent, sourceView: View, zoomRatio: Float) {
             var nextDuration = (gestureStartVisibleDurationMs * zoomRatio).coerceIn(minVisibleDurationMs, maxVisibleDurationMs)
             val startFraction = ((gestureStartMidX - plotBounds.left) / plotBounds.width()).coerceIn(0f, 1f)
             val timeAtMidpoint = gestureStartVisibleStartMs + (gestureStartVisibleDurationMs * startFraction).toLong()
-            val dragDeltaMs = ((pointerMidX(event) - gestureStartMidX) / plotBounds.width() * nextDuration).toLong()
-            var nextStart = timeAtMidpoint - (nextDuration * startFraction).toLong() - dragDeltaMs
+            var nextStart = timeAtMidpoint - (nextDuration * startFraction).toLong()
 
             val clamped = clampViewport(nextStart, nextDuration)
             nextStart = clamped.first
             nextDuration = clamped.second
             customStartMs = nextStart
             customDurationMs = nextDuration
-            onViewportChanged?.invoke()
-            invalidate()
+        }
+
+        private fun updateRightAxisViewport(event: MotionEvent, sourceView: View, zoomRatio: Float) {
+            if (rightAxisMode == null || plotBounds.height() <= 0f) return
+
+            val startMin = gestureStartRightAxisMin ?: return
+            val startMax = gestureStartRightAxisMax ?: return
+            val startRange = (startMax - startMin).coerceAtLeast(0.0001)
+            val baseScale = RightAxisScale(startMin, startMax, emptyList())
+            val minRange = minimumRightAxisRange(baseScale)
+            val maxRange = maximumRightAxisRange(baseScale)
+            val nextRange = (startRange * zoomRatio).coerceIn(minRange, maxRange)
+            val startFraction = ((gestureStartMidY - plotBounds.top) / plotBounds.height()).coerceIn(0f, 1f)
+            val valueAtStartMidpoint = startMax - startRange * startFraction
+            val nextMax = valueAtStartMidpoint + nextRange * startFraction
+            val nextMin = nextMax - nextRange
+            setCustomRightAxisScale(nextMin, nextMax, baseScale)
+        }
+
+        private fun scaleZoomRatio(rawRatio: Float): Float {
+            val clamped = rawRatio.coerceIn(0.15f, 8f)
+            return if (clamped > 1f) {
+                clamped.toDouble().pow(1.65).toFloat().coerceAtMost(8f)
+            } else {
+                clamped
+            }
         }
 
         private fun pointerDistance(event: MotionEvent): Float {
@@ -2167,8 +2327,43 @@ class BatteryCurrentService : Service() {
         }
 
         private fun pointerMidX(event: MotionEvent): Float {
-            if (event.pointerCount < 2) return event.x
-            return (event.getX(0) + event.getX(1)) / 2f
+            return pointerMidX(event, this)
+        }
+
+        private fun pointerMidX(event: MotionEvent, sourceView: View): Float {
+            val sourceOffsetX = sourceOffsetX(sourceView)
+            if (event.pointerCount < 2) return event.x + sourceOffsetX
+            return (event.getX(0) + event.getX(1)) / 2f + sourceOffsetX
+        }
+
+        private fun pointerMidY(event: MotionEvent): Float {
+            return pointerMidY(event, this)
+        }
+
+        private fun pointerMidY(event: MotionEvent, sourceView: View): Float {
+            val sourceOffsetY = sourceOffsetY(sourceView)
+            if (event.pointerCount < 2) return event.y + sourceOffsetY
+            return (event.getY(0) + event.getY(1)) / 2f + sourceOffsetY
+        }
+
+        private fun sourceOffsetX(sourceView: View): Float {
+            if (sourceView === this) return 0f
+
+            val sourceLocation = IntArray(2)
+            val graphLocation = IntArray(2)
+            sourceView.getLocationOnScreen(sourceLocation)
+            getLocationOnScreen(graphLocation)
+            return (sourceLocation[0] - graphLocation[0]).toFloat()
+        }
+
+        private fun sourceOffsetY(sourceView: View): Float {
+            if (sourceView === this) return 0f
+
+            val sourceLocation = IntArray(2)
+            val graphLocation = IntArray(2)
+            sourceView.getLocationOnScreen(sourceLocation)
+            getLocationOnScreen(graphLocation)
+            return (sourceLocation[1] - graphLocation[1]).toFloat()
         }
 
         private fun isInsidePlot(event: MotionEvent): Boolean {
@@ -2212,7 +2407,7 @@ class BatteryCurrentService : Service() {
                 return
             }
 
-            val text = "Rst Graph"
+            val text = "Rst Zoom"
             val horizontalPadding = 18f
             val verticalPadding = 15f
             val textWidth = resetZoomTextPaint.measureText(text)
@@ -2228,6 +2423,50 @@ class BatteryCurrentService : Service() {
             val centeredBaseline = resetZoomHitRect.centerY() -
                 (resetZoomTextPaint.descent() + resetZoomTextPaint.ascent()) / 2f
             canvas.drawText(text, resetZoomHitRect.centerX(), centeredBaseline, resetZoomTextPaint)
+        }
+
+        private fun drawZoomAxisButtons(canvas: Canvas) {
+            val hitWidth = 96f
+            val hitHeight = 78f
+            val visualInset = 8f
+            xZoomButtonHitRect.set(
+                plotBounds.left - 18f,
+                plotBounds.bottom + 40f,
+                plotBounds.left - 18f + hitWidth,
+                plotBounds.bottom + 40f + hitHeight
+            )
+            drawZoomAxisButton(canvas, xZoomButtonHitRect, "\u2194", activeZoomAxis == ZoomAxis.X, visualInset)
+
+            if (rightAxisMode == null) {
+                yZoomButtonHitRect.setEmpty()
+                return
+            }
+
+            yZoomButtonHitRect.set(
+                plotBounds.left - hitWidth - 22f,
+                plotBounds.top + 8f,
+                plotBounds.left - 22f,
+                plotBounds.top + 8f + hitHeight
+            )
+            drawZoomAxisButton(canvas, yZoomButtonHitRect, "\u2195", activeZoomAxis == ZoomAxis.Y, visualInset)
+        }
+
+        private fun drawZoomAxisButton(
+            canvas: Canvas,
+            bounds: RectF,
+            label: String,
+            isActive: Boolean,
+            visualInset: Float
+        ) {
+            val paint = if (isActive) zoomButtonBackgroundPaint else zoomButtonInactivePaint
+            val visualBounds = RectF(bounds).apply {
+                inset(visualInset, visualInset)
+            }
+            canvas.drawRoundRect(visualBounds, 12f, 12f, paint)
+            val centeredBaseline = visualBounds.centerY() -
+                (zoomButtonTextPaint.descent() + zoomButtonTextPaint.ascent()) / 2f
+            zoomButtonTextPaint.color = if (isActive) Color.rgb(45, 38, 0) else Color.WHITE
+            canvas.drawText(label, visualBounds.centerX(), centeredBaseline, zoomButtonTextPaint)
         }
 
         private fun drawRightAxisTicks(canvas: Canvas, scale: RightAxisScale?) {
@@ -2354,6 +2593,65 @@ class BatteryCurrentService : Service() {
                 RightAxisMode.TEMPERATURE,
                 RightAxisMode.CURRENT -> chooseAutoRightAxisScale(visiblePoints.mapNotNull { rightAxisValue(it) })
             }
+        }
+
+        private fun applyCustomRightAxisScale(baseScale: RightAxisScale?): RightAxisScale? {
+            val customMin = customRightAxisMin
+            val customMax = customRightAxisMax
+            if (baseScale == null || customMin == null || customMax == null || customMax <= customMin) {
+                return baseScale
+            }
+
+            return RightAxisScale(customMin, customMax, chooseCustomRightAxisTicks(customMin, customMax))
+        }
+
+        private fun setCustomRightAxisScale(nextMin: Double, nextMax: Double, baseScale: RightAxisScale) {
+            val range = (nextMax - nextMin).coerceAtLeast(minimumRightAxisRange(baseScale))
+            var min = nextMin
+            var max = min + range
+
+            if (rightAxisMode == RightAxisMode.BATTERY || rightAxisMode == RightAxisMode.VOLTAGE) {
+                val boundedRange = range.coerceAtMost(baseScale.range)
+                val center = (min + max) / 2.0
+                min = (center - boundedRange / 2.0).coerceAtLeast(baseScale.min)
+                max = min + boundedRange
+                if (max > baseScale.max) {
+                    max = baseScale.max
+                    min = max - boundedRange
+                }
+            }
+
+            customRightAxisMin = min
+            customRightAxisMax = max
+        }
+
+        private fun minimumRightAxisRange(baseScale: RightAxisScale): Double {
+            return when (rightAxisMode) {
+                RightAxisMode.BATTERY -> 5.0
+                RightAxisMode.VOLTAGE -> 0.05
+                else -> (baseScale.range / 20.0).coerceAtLeast(0.0001)
+            }
+        }
+
+        private fun maximumRightAxisRange(baseScale: RightAxisScale): Double {
+            return when (rightAxisMode) {
+                RightAxisMode.BATTERY,
+                RightAxisMode.VOLTAGE -> baseScale.range
+                else -> (baseScale.range * 8.0).coerceAtLeast(minimumRightAxisRange(baseScale))
+            }
+        }
+
+        private fun chooseCustomRightAxisTicks(min: Double, max: Double): List<Double> {
+            val range = (max - min).coerceAtLeast(0.0001)
+            val step = chooseNiceStep(range / 4.0)
+            val firstTick = ceil(min / step) * step
+            val ticks = ArrayList<Double>()
+            var tick = firstTick
+            while (tick <= max + step * 0.5 && ticks.size < 8) {
+                ticks.add(if (abs(tick) < step / 1000.0) 0.0 else tick)
+                tick += step
+            }
+            return if (ticks.size >= 2) ticks else listOf(min, max)
         }
 
         private fun chooseAutoRightAxisScale(values: List<Double>): RightAxisScale? {
