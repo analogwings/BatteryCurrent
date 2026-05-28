@@ -7,8 +7,8 @@ providers.gradleProperty("codexBuildDir").orNull?.let { customBuildDir ->
     layout.buildDirectory.set(file(customBuildDir))
 }
 
-val appVersionCode = 100
-val appVersionName = "1.00"
+val appVersionCode = 101
+val appVersionName = "1.01"
 val appDisplayVersion = "v$appVersionName ($appVersionCode)"
 val appDebugDisplayVersion = "v$appVersionName-dev ($appVersionCode)"
 val isProBuild = providers.gradleProperty("batteryCurrentPro")
