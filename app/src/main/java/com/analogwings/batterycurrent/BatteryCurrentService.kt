@@ -1820,6 +1820,8 @@ class BatteryCurrentService : Service() {
         private var gestureStartVisibleDurationMs = 0f
         private var gestureStartRightAxisMin: Double? = null
         private var gestureStartRightAxisMax: Double? = null
+        private var gestureBaseRightAxisMin: Double? = null
+        private var gestureBaseRightAxisMax: Double? = null
         private var gestureSourceView: View? = null
         private var isSingleFingerDragActive = false
         private var isZoomArmedTouchActive = false
@@ -2260,9 +2262,12 @@ class BatteryCurrentService : Service() {
             val visiblePoints = points.filter { point ->
                 point.timestampMs >= viewport.first && point.timestampMs <= viewport.first + viewport.second.toLong()
             }.ifEmpty { points }
-            val rightAxisScale = applyCustomRightAxisScale(chooseRightAxisScale(visiblePoints))
+            val baseRightAxisScale = chooseRightAxisScale(visiblePoints)
+            val rightAxisScale = applyCustomRightAxisScale(baseRightAxisScale)
             gestureStartRightAxisMin = rightAxisScale?.min
             gestureStartRightAxisMax = rightAxisScale?.max
+            gestureBaseRightAxisMin = baseRightAxisScale?.min
+            gestureBaseRightAxisMax = baseRightAxisScale?.max
         }
 
         private fun updateViewportGesture(event: MotionEvent, sourceView: View) {
@@ -2284,7 +2289,8 @@ class BatteryCurrentService : Service() {
             var nextDuration = (gestureStartVisibleDurationMs * zoomRatio).coerceIn(minVisibleDurationMs, maxVisibleDurationMs)
             val startFraction = ((gestureStartMidX - plotBounds.left) / plotBounds.width()).coerceIn(0f, 1f)
             val timeAtMidpoint = gestureStartVisibleStartMs + (gestureStartVisibleDurationMs * startFraction).toLong()
-            var nextStart = timeAtMidpoint - (nextDuration * startFraction).toLong()
+            val dragDeltaMs = ((pointerMidX(event, sourceView) - gestureStartMidX) / plotBounds.width() * nextDuration).toLong()
+            var nextStart = timeAtMidpoint - (nextDuration * startFraction).toLong() - dragDeltaMs
 
             val clamped = clampViewport(nextStart, nextDuration)
             nextStart = clamped.first
@@ -2298,14 +2304,17 @@ class BatteryCurrentService : Service() {
 
             val startMin = gestureStartRightAxisMin ?: return
             val startMax = gestureStartRightAxisMax ?: return
+            val baseMin = gestureBaseRightAxisMin ?: startMin
+            val baseMax = gestureBaseRightAxisMax ?: startMax
             val startRange = (startMax - startMin).coerceAtLeast(0.0001)
-            val baseScale = RightAxisScale(startMin, startMax, emptyList())
+            val baseScale = RightAxisScale(baseMin, baseMax, emptyList())
             val minRange = minimumRightAxisRange(baseScale)
             val maxRange = maximumRightAxisRange(baseScale)
             val nextRange = (startRange * zoomRatio).coerceIn(minRange, maxRange)
             val startFraction = ((gestureStartMidY - plotBounds.top) / plotBounds.height()).coerceIn(0f, 1f)
             val valueAtStartMidpoint = startMax - startRange * startFraction
-            val nextMax = valueAtStartMidpoint + nextRange * startFraction
+            val dragDeltaValue = ((pointerMidY(event, sourceView) - gestureStartMidY) / plotBounds.height()) * nextRange
+            val nextMax = valueAtStartMidpoint + nextRange * startFraction + dragDeltaValue
             val nextMin = nextMax - nextRange
             setCustomRightAxisScale(nextMin, nextMax, baseScale)
         }
