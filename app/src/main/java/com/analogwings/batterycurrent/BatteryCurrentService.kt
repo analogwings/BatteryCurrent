@@ -89,12 +89,7 @@ class BatteryCurrentService : Service() {
     // Persist overlay position after dragging; lock only controls whether it can move.
     // Coordinates are WindowManager.LayoutParams.x/y using Gravity.CENTER.
     private val overlayPrefsName = "battery_current_overlay_prefs"
-    private val overlayXKey = "overlay_x"
-    private val overlayYKey = "overlay_y"
     private val overlayLockedKey = "overlay_locked"
-    private val overlayHasSavedPositionKey = "overlay_has_saved_position"
-    private val defaultOverlayX = 24
-    private val defaultOverlayY = 90
 
     private val energyPrefsName = "battery_current_energy_prefs"
     private val energySessionStartKey = "energy_session_start_ms"
@@ -764,22 +759,11 @@ class BatteryCurrentService : Service() {
     }
 
     private fun loadOverlayPosition(): Pair<Int, Int> {
-        val prefs = getSharedPreferences(overlayPrefsName, Context.MODE_PRIVATE)
-        val hasSavedPosition = prefs.getBoolean(overlayHasSavedPositionKey, false)
-        if (!hasSavedPosition) return 0 to 0
-
-        val x = prefs.getInt(overlayXKey, defaultOverlayX)
-        val y = prefs.getInt(overlayYKey, defaultOverlayY)
-        return x to y
+        return OverlayPositionPreference.loadPosition(this) ?: (0 to 0)
     }
 
     private fun saveOverlayPosition(x: Int, y: Int) {
-        getSharedPreferences(overlayPrefsName, Context.MODE_PRIVATE)
-            .edit()
-            .putInt(overlayXKey, x)
-            .putInt(overlayYKey, y)
-            .putBoolean(overlayHasSavedPositionKey, true)
-            .apply()
+        OverlayPositionPreference.savePosition(this, x, y)
     }
 
     private fun isOverlayLocked(): Boolean {
@@ -895,8 +879,7 @@ class BatteryCurrentService : Service() {
             WindowManager.LayoutParams.WRAP_CONTENT,
             overlayType(),
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
-                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.CENTER
