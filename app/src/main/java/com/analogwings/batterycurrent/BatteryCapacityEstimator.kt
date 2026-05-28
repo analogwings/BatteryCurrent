@@ -40,11 +40,21 @@ class BatteryCapacityEstimator(private val context: Context) {
         val averageCapacityMah: Int
     )
 
+    private data class MovingAverageSnapshot(
+        val timestampMs: Long,
+        val movingAverageMah: Int,
+        val totalReadingCount: Int,
+        val windowReadingCount: Int
+    )
+
     private val eventsFile: File
         get() = File(context.filesDir, "battery_capacity_events.csv")
 
     private val readingsFile: File
         get() = File(context.filesDir, "battery_capacity_estimates.csv")
+
+    private val movingAverageFile: File
+        get() = File(context.filesDir, "battery_capacity_moving_average.csv")
 
     private val legacyCalibrationFile: File
         get() = File(context.filesDir, "battery_capacity_calibration.csv")
@@ -93,7 +103,7 @@ class BatteryCapacityEstimator(private val context: Context) {
     fun displayState(): DisplayState {
         val activeEvent = readActiveEvent()
         return DisplayState(
-            estimateMah = latestDailyEstimate(),
+            estimateMah = latestMovingAverageEstimate() ?: latestDailyEstimate(),
             warningText = buildWarningText(),
             isEventActive = activeEvent != null,
             isEventArmed = activeEvent == null && isAtCapacityEventArmingLevel()
@@ -218,6 +228,7 @@ class BatteryCapacityEstimator(private val context: Context) {
             endChargeMah = endChargeMah
         )
         appendDailyReading(now, capacityMah)
+        appendMovingAverageReading(now, capacityMah)
     }
 
     private fun appendEvent(
@@ -299,6 +310,65 @@ class BatteryCapacityEstimator(private val context: Context) {
         return readReadings().lastOrNull()?.averageCapacityMah
     }
 
+    private fun appendMovingAverageReading(timestampMs: Long, capacityMah: Int) {
+        val samples = readMovingAverageSamples().toMutableList()
+        samples.add(capacityMah)
+        while (samples.size > MOVING_AVERAGE_READING_COUNT) {
+            samples.removeAt(0)
+        }
+
+        val totalReadingCount = prefs.getInt(TOTAL_CAPACITY_READING_COUNT_KEY, 0) + 1
+        val movingAverageMah = samples.average().roundToInt()
+        prefs.edit()
+            .putString(MOVING_AVERAGE_SAMPLES_KEY, samples.joinToString(","))
+            .putInt(TOTAL_CAPACITY_READING_COUNT_KEY, totalReadingCount)
+            .putInt(LATEST_MOVING_AVERAGE_KEY, movingAverageMah)
+            .apply()
+
+        if (totalReadingCount % MOVING_AVERAGE_READING_COUNT == 0) {
+            appendMovingAverageSnapshot(
+                MovingAverageSnapshot(
+                    timestampMs = timestampMs,
+                    movingAverageMah = movingAverageMah,
+                    totalReadingCount = totalReadingCount,
+                    windowReadingCount = samples.size
+                )
+            )
+        }
+    }
+
+    private fun latestMovingAverageEstimate(): Int? {
+        val latest = prefs.getInt(LATEST_MOVING_AVERAGE_KEY, 0)
+        if (latest > 0) return latest
+
+        val samples = readMovingAverageSamples()
+        return samples.takeIf { it.isNotEmpty() }?.average()?.roundToInt()
+    }
+
+    private fun readMovingAverageSamples(): List<Int> {
+        return prefs.getString(MOVING_AVERAGE_SAMPLES_KEY, null)
+            ?.split(",")
+            ?.mapNotNull { it.toIntOrNull()?.takeIf { value -> value > 0 } }
+            ?: emptyList()
+    }
+
+    private fun appendMovingAverageSnapshot(snapshot: MovingAverageSnapshot) {
+        val header = "timestampMs,date,movingAverageMah,totalReadingCount,windowReadingCount"
+        val row = listOf(
+            snapshot.timestampMs.toString(),
+            formatEventTimestamp(snapshot.timestampMs),
+            snapshot.movingAverageMah.toString(),
+            snapshot.totalReadingCount.toString(),
+            snapshot.windowReadingCount.toString()
+        ).joinToString(",")
+
+        if (!movingAverageFile.exists() || movingAverageFile.length() == 0L) {
+            movingAverageFile.writeText("$header\n$row")
+        } else {
+            movingAverageFile.appendText("\n$row")
+        }
+    }
+
     private fun buildWarningText(): String? {
         val window = latestCapacityWindow() ?: return null
         val referenceCapacity = prefs.getInt(WARNING_REFERENCE_CAPACITY_KEY, 0)
@@ -320,21 +390,28 @@ class BatteryCapacityEstimator(private val context: Context) {
     }
 
     private fun latestCapacityWindow(): CapacityWindow? {
-        val readings = readReadings()
-        if (readings.size < WARNING_READING_COUNT) return null
+        return readMovingAverageSnapshots().lastOrNull()?.let { snapshot ->
+            CapacityWindow(
+                timestampMs = snapshot.timestampMs,
+                averageCapacityMah = snapshot.movingAverageMah
+            )
+        }
+    }
 
-        val window = readings.takeLast(WARNING_READING_COUNT)
-        val latest = window.last()
-        val averageCapacityMah = window
-            .map { it.averageCapacityMah }
-            .average()
-            .roundToInt()
-        if (averageCapacityMah <= 0) return null
+    private fun readMovingAverageSnapshots(): List<MovingAverageSnapshot> {
+        if (!movingAverageFile.exists()) return emptyList()
 
-        return CapacityWindow(
-            timestampMs = latest.timestampMs,
-            averageCapacityMah = averageCapacityMah
-        )
+        return movingAverageFile.readLines().mapNotNull { line ->
+            if (line.startsWith("timestampMs,")) return@mapNotNull null
+            val parts = line.split(",")
+            if (parts.size < 5) return@mapNotNull null
+            MovingAverageSnapshot(
+                timestampMs = parts[0].toLongOrNull() ?: return@mapNotNull null,
+                movingAverageMah = parts[2].toIntOrNull() ?: return@mapNotNull null,
+                totalReadingCount = parts[3].toIntOrNull() ?: return@mapNotNull null,
+                windowReadingCount = parts[4].toIntOrNull() ?: return@mapNotNull null
+            )
+        }.sortedBy { it.timestampMs }
     }
 
     private fun readReadings(): List<DailyCapacityReading> {
@@ -393,8 +470,8 @@ class BatteryCapacityEstimator(private val context: Context) {
         private const val EVENT_HIGH_PERCENT = 75
         private const val EVENT_PERCENT_SPAN = 50.0
         private const val MAX_STORED_DAYS = 400
-        private const val WARNING_READING_COUNT = 10
         private const val WARNING_DROP_FRACTION = 0.01
+        private const val MOVING_AVERAGE_READING_COUNT = 100
         private const val ACTIVE_EVENT_DIRECTION_KEY = "active_event_direction"
         private const val ACTIVE_EVENT_START_TIMESTAMP_KEY = "active_event_start_timestamp_ms"
         private const val ACTIVE_EVENT_START_CHARGE_KEY = "active_event_start_charge_mah"
@@ -403,5 +480,8 @@ class BatteryCapacityEstimator(private val context: Context) {
         private const val UNKNOWN_PERCENT = -1
         private const val WARNING_REFERENCE_TIMESTAMP_KEY = "warning_reference_timestamp_ms"
         private const val WARNING_REFERENCE_CAPACITY_KEY = "warning_reference_capacity_mah"
+        private const val MOVING_AVERAGE_SAMPLES_KEY = "moving_average_capacity_samples"
+        private const val TOTAL_CAPACITY_READING_COUNT_KEY = "total_capacity_reading_count"
+        private const val LATEST_MOVING_AVERAGE_KEY = "latest_moving_average_mah"
     }
 }
