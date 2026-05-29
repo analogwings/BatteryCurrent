@@ -2625,12 +2625,13 @@ class BatteryCurrentService : Service() {
             var max = min + range
 
             if (rightAxisMode == RightAxisMode.BATTERY || rightAxisMode == RightAxisMode.VOLTAGE) {
-                val boundedRange = range.coerceAtMost(baseScale.range)
+                val upperBound = if (rightAxisMode == RightAxisMode.BATTERY) 120.0 else baseScale.max
+                val boundedRange = range.coerceAtMost(upperBound - baseScale.min)
                 val center = (min + max) / 2.0
                 min = (center - boundedRange / 2.0).coerceAtLeast(baseScale.min)
                 max = min + boundedRange
-                if (max > baseScale.max) {
-                    max = baseScale.max
+                if (max > upperBound) {
+                    max = upperBound
                     min = max - boundedRange
                 }
             }
@@ -2649,7 +2650,7 @@ class BatteryCurrentService : Service() {
 
         private fun maximumRightAxisRange(baseScale: RightAxisScale): Double {
             return when (rightAxisMode) {
-                RightAxisMode.BATTERY,
+                RightAxisMode.BATTERY -> 120.0 - baseScale.min
                 RightAxisMode.VOLTAGE -> baseScale.range
                 else -> (baseScale.range * 8.0).coerceAtLeast(minimumRightAxisRange(baseScale))
             }
@@ -2678,8 +2679,21 @@ class BatteryCurrentService : Service() {
             val rawMax = if (includeZero) maxOf(0.0, maxValue) else maxValue
             val rawRange = (rawMax - rawMin).coerceAtLeast(minimumAutoRightAxisRange())
             val step = chooseNiceStep(rawRange / 4.0)
-            val minTick = floor(rawMin / step) * step
-            val maxTick = ceil(rawMax / step) * step
+            var minTick = floor(rawMin / step) * step
+            var maxTick = ceil(rawMax / step) * step
+            if (rightAxisMode == RightAxisMode.BATTERY) {
+                minTick = minTick.coerceAtLeast(0.0)
+                maxTick = maxTick.coerceAtMost(100.0)
+            } else if (rightAxisMode == RightAxisMode.VOLTAGE) {
+                maxTick = maxTick.coerceAtMost(5.0)
+            }
+            if (maxTick <= minTick) {
+                if (rightAxisMode == RightAxisMode.BATTERY && maxTick >= 100.0) {
+                    minTick = (maxTick - step).coerceAtLeast(0.0)
+                } else {
+                    maxTick += step
+                }
+            }
             val ticks = ArrayList<Double>()
             var tick = minTick
             while (tick <= maxTick + step * 0.5) {
