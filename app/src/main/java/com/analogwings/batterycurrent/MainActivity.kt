@@ -10,14 +10,21 @@ import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -25,6 +32,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -33,8 +41,14 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.unit.dp
 import com.analogwings.batterycurrent.ui.theme.BatteryCurrentTheme
 
@@ -71,6 +85,7 @@ class MainActivity : ComponentActivity() {
                         onLightOverlayChanged = { enabled ->
                             OverlayThemePreference.setLightBackgroundEnabled(this, enabled)
                         },
+                        onResetOverlayPosition = { resetForegroundOverlayPosition() },
                         onOriginalCapacityChanged = { capacityMah ->
                             BatteryCapacityReference.saveOriginalCapacityMah(this, capacityMah)
                         },
@@ -149,6 +164,19 @@ class MainActivity : ComponentActivity() {
         }
         finish()
     }
+
+    private fun resetForegroundOverlayPosition() {
+        OverlayPositionPreference.resetPosition(this)
+
+        val intent = Intent(this, BatteryCurrentService::class.java).apply {
+            action = BatteryCurrentService.ACTION_RESET_OVERLAY_POSITION
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            startForegroundService(intent)
+        } else {
+            startService(intent)
+        }
+    }
 }
 
 @Composable
@@ -161,6 +189,7 @@ private fun BatteryCurrentScreen(
     onStop: () -> Unit,
     onTemporaryProChanged: (Boolean) -> Unit,
     onLightOverlayChanged: (Boolean) -> Unit,
+    onResetOverlayPosition: () -> Unit,
     onOriginalCapacityChanged: (Int?) -> Unit,
     onOriginalCapacitySkipped: () -> Unit
 ) {
@@ -225,12 +254,20 @@ private fun BatteryCurrentScreen(
             )
             Switch(
                 checked = temporaryProEnabled,
+                colors = silverSwitchColors(),
                 onCheckedChange = { enabled ->
                     temporaryProEnabled = enabled
                     onTemporaryProChanged(enabled)
                 }
             )
         }
+
+        Spacer(modifier = Modifier.height(12.dp))
+
+        StartupActionButton(
+            text = "Reset foreground display",
+            onClick = onResetOverlayPosition
+        )
 
         Spacer(modifier = Modifier.height(12.dp))
 
@@ -246,6 +283,7 @@ private fun BatteryCurrentScreen(
             )
             Switch(
                 checked = lightOverlayEnabled,
+                colors = silverSwitchColors(),
                 onCheckedChange = { enabled ->
                     lightOverlayEnabled = enabled
                     onLightOverlayChanged(enabled)
@@ -261,31 +299,106 @@ private fun BatteryCurrentScreen(
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
             Text(
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(end = 12.dp),
                 text = originalCapacityMah?.let { "Original capacity: ${it}mAh" } ?: "Original capacity not set",
-                style = MaterialTheme.typography.bodyMedium
+                style = MaterialTheme.typography.bodyLarge,
+                fontWeight = FontWeight.Medium
             )
-            Button(onClick = { showCapacityDialog = true }) {
-                Text(if (originalCapacityMah == null) "Add" else "Edit")
-            }
+            StartupActionButton(
+                text = if (originalCapacityMah == null) "Add" else "Edit",
+                onClick = { showCapacityDialog = true }
+            )
         }
 
         Spacer(modifier = Modifier.height(24.dp))
 
-        Button(
+        Row(
             modifier = Modifier.fillMaxWidth(),
-            onClick = onStart
+            horizontalArrangement = Arrangement.SpaceEvenly,
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            Text("Start Monitoring")
+            StartupActionButton(
+                text = "Start monitoring",
+                onClick = onStart
+            )
+            StartupActionButton(
+                text = "Stop monitoring",
+                onClick = onStop
+            )
         }
+    }
+}
 
-        Spacer(modifier = Modifier.height(12.dp))
+@Composable
+private fun silverSwitchColors() = SwitchDefaults.colors(
+    checkedThumbColor = Color(0xFFF7F9FA),
+    checkedTrackColor = Color(0xFF8F9AA3),
+    checkedBorderColor = Color(0xFFE8ECEF),
+    uncheckedThumbColor = Color(0xFFD7DCE0),
+    uncheckedTrackColor = Color(0xFF4E555C),
+    uncheckedBorderColor = Color(0xFF99A1A8)
+)
 
-        Button(
-            modifier = Modifier.fillMaxWidth(),
-            onClick = onStop
-        ) {
-            Text("Stop Monitoring")
-        }
+@Composable
+private fun StartupActionButton(
+    text: String,
+    onClick: () -> Unit
+) {
+    val shape = RoundedCornerShape(16.dp)
+    Box(
+        modifier = Modifier
+            .width(136.dp)
+            .height(68.dp)
+            .shadow(8.dp, shape, clip = false)
+            .clip(shape)
+            .background(
+                Brush.verticalGradient(
+                    listOf(
+                        Color(0xFFF8FAFB),
+                        Color(0xFFDDE2E6),
+                        Color(0xFFB8C0C7)
+                    )
+                )
+            )
+            .border(2.dp, Color(0xFF6F7780), shape)
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) {
+        Box(
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .fillMaxWidth()
+                .height(18.dp)
+                .padding(horizontal = 12.dp, vertical = 5.dp)
+                .clip(RoundedCornerShape(12.dp))
+                .background(
+                    Brush.verticalGradient(
+                        listOf(
+                            Color(0xCCFFFFFF),
+                            Color(0x22FFFFFF)
+                        )
+                    )
+                )
+        )
+        Box(
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .height(18.dp)
+                .padding(horizontal = 12.dp, vertical = 5.dp)
+                .clip(RoundedCornerShape(12.dp))
+                .background(Color(0x18000000))
+        )
+        Text(
+            text = text,
+            style = MaterialTheme.typography.labelLarge,
+            fontWeight = FontWeight.ExtraBold,
+            color = Color(0xFF26313A),
+            textAlign = TextAlign.Center,
+            maxLines = 2
+        )
     }
 }
 

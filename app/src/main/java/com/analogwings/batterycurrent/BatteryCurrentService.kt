@@ -53,6 +53,7 @@ class BatteryCurrentService : Service() {
     companion object {
         const val ACTION_SHOW_OVERLAY = "com.analogwings.batterycurrent.SHOW_OVERLAY"
         const val ACTION_STOP_MONITORING = "com.analogwings.batterycurrent.STOP_MONITORING"
+        const val ACTION_RESET_OVERLAY_POSITION = "com.analogwings.batterycurrent.RESET_OVERLAY_POSITION"
         private const val ENERGY_UNIT_MWH = "mWh"
         private const val ENERGY_UNIT_MAH = "mAh"
         private const val TEMPERATURE_UNIT_C = "C"
@@ -177,6 +178,14 @@ class BatteryCurrentService : Service() {
             ACTION_STOP_MONITORING -> {
                 stopMonitoring()
                 return START_NOT_STICKY
+            }
+            ACTION_RESET_OVERLAY_POSITION -> {
+                resetForegroundOverlayToCenter()
+                if (overlayView == null) {
+                    stopSelf()
+                    return START_NOT_STICKY
+                }
+                return START_STICKY
             }
         }
         handler.removeCallbacks(updateRunnable)
@@ -765,6 +774,15 @@ class BatteryCurrentService : Service() {
 
     private fun saveOverlayPosition(x: Int, y: Int) {
         OverlayPositionPreference.savePosition(this, x, y)
+    }
+
+    private fun resetForegroundOverlayToCenter() {
+        OverlayPositionPreference.resetPosition(this)
+        val view = overlayView ?: return
+        val params = view.layoutParams as? WindowManager.LayoutParams ?: return
+        params.x = 0
+        params.y = 0
+        updateOverlayLayoutSafely(view, params)
     }
 
     private fun isOverlayLocked(): Boolean {
@@ -1407,7 +1425,7 @@ class BatteryCurrentService : Service() {
             addView(createDisplayToggleRow(
                 "Volt" to displayVoltageKey,
                 energyDisplayLabel() to displayEnergyKey,
-                "Battery" to displayBatteryKey
+                "Battery%" to displayBatteryKey
             ))
         }
     }
