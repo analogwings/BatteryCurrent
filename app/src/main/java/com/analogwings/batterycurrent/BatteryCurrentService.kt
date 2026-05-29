@@ -2514,11 +2514,16 @@ class BatteryCurrentService : Service() {
 
         private fun drawBatteryThresholdLines(canvas: Canvas, scale: RightAxisScale) {
             if (rightAxisMode != RightAxisMode.BATTERY) return
+            if (25.0 !in scale.min..scale.max && 75.0 !in scale.min..scale.max) return
 
-            val lowY = yForRightAxisValue(25.0, scale)
-            val highY = yForRightAxisValue(75.0, scale)
-            canvas.drawLine(plotBounds.left, lowY, plotBounds.right, lowY, batteryLowThresholdPaint)
-            canvas.drawLine(plotBounds.left, highY, plotBounds.right, highY, batteryHighThresholdPaint)
+            if (25.0 in scale.min..scale.max) {
+                val lowY = yForRightAxisValue(25.0, scale)
+                canvas.drawLine(plotBounds.left, lowY, plotBounds.right, lowY, batteryLowThresholdPaint)
+            }
+            if (75.0 in scale.min..scale.max) {
+                val highY = yForRightAxisValue(75.0, scale)
+                canvas.drawLine(plotBounds.left, highY, plotBounds.right, highY, batteryHighThresholdPaint)
+            }
         }
 
         private fun rightAxisTraceColor(value: Double): Int {
@@ -2597,8 +2602,8 @@ class BatteryCurrentService : Service() {
         private fun chooseRightAxisScale(visiblePoints: List<EnergyPoint>): RightAxisScale? {
             return when (rightAxisMode) {
                 null -> null
-                RightAxisMode.BATTERY -> RightAxisScale(0.0, 100.0, listOf(0.0, 25.0, 50.0, 75.0, 100.0))
-                RightAxisMode.VOLTAGE -> RightAxisScale(3.5, 4.5, listOf(3.5, 3.75, 4.0, 4.25, 4.5))
+                RightAxisMode.BATTERY,
+                RightAxisMode.VOLTAGE,
                 RightAxisMode.TEMPERATURE,
                 RightAxisMode.CURRENT -> chooseAutoRightAxisScale(visiblePoints.mapNotNull { rightAxisValue(it) })
             }
@@ -2671,7 +2676,7 @@ class BatteryCurrentService : Service() {
             val maxValue = values.maxOrNull() ?: return null
             val rawMin = if (includeZero) minOf(0.0, minValue) else minValue
             val rawMax = if (includeZero) maxOf(0.0, maxValue) else maxValue
-            val rawRange = (rawMax - rawMin).coerceAtLeast(1.0)
+            val rawRange = (rawMax - rawMin).coerceAtLeast(minimumAutoRightAxisRange())
             val step = chooseNiceStep(rawRange / 4.0)
             val minTick = floor(rawMin / step) * step
             val maxTick = ceil(rawMax / step) * step
@@ -2682,6 +2687,14 @@ class BatteryCurrentService : Service() {
                 tick += step
             }
             return RightAxisScale(minTick, maxTick, ticks)
+        }
+
+        private fun minimumAutoRightAxisRange(): Double {
+            return when (rightAxisMode) {
+                RightAxisMode.BATTERY -> 5.0
+                RightAxisMode.VOLTAGE -> 0.05
+                else -> 1.0
+            }
         }
 
         private fun rightAxisValue(point: EnergyPoint): Double? {
@@ -2698,7 +2711,7 @@ class BatteryCurrentService : Service() {
 
         private fun formatRightAxisTick(value: Double): String {
             return when (rightAxisMode) {
-                RightAxisMode.VOLTAGE -> String.format(Locale.US, "%.2g", value)
+                RightAxisMode.VOLTAGE -> String.format(Locale.US, "%.2f", value)
                 else -> String.format(Locale.US, "%.0f", value)
             }
         }
