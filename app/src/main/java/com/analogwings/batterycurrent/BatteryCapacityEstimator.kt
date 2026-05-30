@@ -321,27 +321,50 @@ class BatteryCapacityEstimator(private val context: Context) {
             return latestStoredPeukertK()
         }
 
-        val candidates = readPeukertEventReadings()
+        val currentReading = PeukertEventReading(capacityMah, avgCurrentMa)
+        val readings = (readPeukertEventReadings() + currentReading)
             .filter { it.capacityMah > 0 && it.avgCurrentMa >= MINIMUM_PEUKERT_CURRENT_MA }
-            .mapNotNull { previous ->
-                val currentRatio = avgCurrentMa / previous.avgCurrentMa
-                if (currentRatio < MINIMUM_PEUKERT_CURRENT_RATIO || currentRatio > (1.0 / MINIMUM_PEUKERT_CURRENT_RATIO)) {
-                    val rawK = 1.0 + ln(capacityMah.toDouble() / previous.capacityMah.toDouble()) /
-                        ln(previous.avgCurrentMa / avgCurrentMa)
-                    rawK.takeIf { it.isFinite() && it in PEUKERT_K_MIN..PEUKERT_K_MAX }
-                } else {
-                    null
-                }
-            }
+            .takeLast(PEUKERT_K_FIT_EVENT_COUNT)
 
+        val fittedK = fitPeukertK(readings)
+        val previousK = latestStoredPeukertK()
         val newK = when {
-            candidates.isNotEmpty() -> candidates.average().coerceIn(PEUKERT_K_MIN, PEUKERT_K_MAX)
-            else -> latestStoredPeukertK()
+            fittedK == null -> previousK
+            previousK == null -> fittedK
+            else -> (previousK * (1.0 - PEUKERT_K_LEARNING_RATE) + fittedK * PEUKERT_K_LEARNING_RATE)
+                .coerceIn(PEUKERT_K_MIN, PEUKERT_K_MAX)
         }
+
         if (newK != null) {
             prefs.edit().putFloat(LATEST_PEUKERT_K_KEY, newK.toFloat()).apply()
         }
         return newK
+    }
+
+    private fun fitPeukertK(readings: List<PeukertEventReading>): Double? {
+        if (readings.size < 2) return null
+
+        val currentRatio = readings.maxOf { it.avgCurrentMa } / readings.minOf { it.avgCurrentMa }
+        if (currentRatio < MINIMUM_PEUKERT_CURRENT_SPREAD_RATIO) return null
+
+        val xValues = readings.map { ln(it.avgCurrentMa) }
+        val yValues = readings.map { ln(it.capacityMah.toDouble()) }
+        val xMean = xValues.average()
+        val yMean = yValues.average()
+
+        var numerator = 0.0
+        var denominator = 0.0
+        for (index in readings.indices) {
+            val dx = xValues[index] - xMean
+            val dy = yValues[index] - yMean
+            numerator += dx * dy
+            denominator += dx * dx
+        }
+        if (denominator <= 0.0) return null
+
+        val slope = numerator / denominator
+        val rawK = 1.0 - slope
+        return rawK.takeIf { it.isFinite() }?.coerceIn(PEUKERT_K_MIN, PEUKERT_K_MAX)
     }
 
     private fun latestStoredPeukertK(): Double? {
@@ -629,7 +652,9 @@ class BatteryCapacityEstimator(private val context: Context) {
         private const val LATEST_PEUKERT_K_KEY = "latest_peukert_k"
         private const val PEUKERT_REFERENCE_CURRENT_MA = 1000.0
         private const val MINIMUM_PEUKERT_CURRENT_MA = 50.0
-        private const val MINIMUM_PEUKERT_CURRENT_RATIO = 0.75
+        private const val MINIMUM_PEUKERT_CURRENT_SPREAD_RATIO = 1.33
+        private const val PEUKERT_K_FIT_EVENT_COUNT = 10
+        private const val PEUKERT_K_LEARNING_RATE = 0.35
         private const val PEUKERT_K_MIN = 1.0
         private const val PEUKERT_K_MAX = 1.30
     }

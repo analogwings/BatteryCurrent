@@ -1382,7 +1382,7 @@ class BatteryCurrentService : Service() {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
                 addView(TextView(this@BatteryCurrentService).apply {
-                    text = "Last 10 capacity estimates"
+                    text = "Last 10 days capacity estimates"
                     textSize = 13f
                     setTypeface(typeface, Typeface.BOLD)
                     setTextColor(Color.WHITE)
