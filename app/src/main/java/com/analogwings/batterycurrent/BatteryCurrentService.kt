@@ -2240,15 +2240,20 @@ class BatteryCurrentService : Service() {
             }
 
             if (plotted.size >= 2) {
-                val path = Path()
-                path.moveTo(plotted.first().second, plotted.first().third)
+                // Draw direct straight segments between measured bucket points.
+                // Do not smooth/interpolate this curve; the user wants the raw learned
+                // bucket-to-bucket SOC linearity shape.
                 for (i in 1 until plotted.size) {
                     val previous = plotted[i - 1]
                     val current = plotted[i]
-                    val midX = (previous.second + current.second) / 2f
-                    path.cubicTo(midX, previous.third, midX, current.third, current.second, current.third)
+                    canvas.drawLine(
+                        previous.second,
+                        previous.third,
+                        current.second,
+                        current.third,
+                        curvePaint
+                    )
                 }
-                canvas.drawPath(path, curvePaint)
             }
 
             plotted.forEach { (point, x, y) ->
