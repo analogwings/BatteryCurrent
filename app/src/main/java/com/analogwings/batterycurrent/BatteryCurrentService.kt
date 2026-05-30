@@ -129,6 +129,12 @@ class BatteryCurrentService : Service() {
     private var lastSampleTimestampMs = 0L
     private var totalNetEnergyMilliWattHours = 0.0
     private var totalNetChargeMilliAmpHours = 0.0
+
+    // Display-only graph reset baseline. This must not affect active measurements,
+    // capacity estimation, bucket learning, or persisted data files.
+    private var graphDisplayZeroTimestampMs = 0L
+    private var graphDisplayZeroEnergyMilliWattHours = 0.0
+    private var graphDisplayZeroChargeMilliAmpHours = 0.0
     private var lastPluggedState = false
     private var latestVoltageMv: Int? = null
     private var latestRoundedMilliAmps: Int? = null
@@ -713,13 +719,33 @@ class BatteryCurrentService : Service() {
 
     private fun buildGraphLiveDisplayText(now: Long): String {
         return listOf(
-            formatElapsedClock(now),
+            formatGraphElapsedClock(now),
             formatCurrentText(),
             formatTemperatureText(),
             formatVoltageText(),
-            formatSelectedEnergy(),
+            formatSelectedGraphEnergy(),
             formatGraphBatteryPercentText()
         ).joinToString(" ")
+    }
+
+    private fun formatGraphElapsedClock(now: Long): String {
+        val zeroMs = graphDisplayZeroTimeMs()
+        val rawElapsedSeconds = ((now - zeroMs).coerceAtLeast(0L)) / 1000L
+        val elapsedSeconds = ((rawElapsedSeconds + 5L) / 10L) * 10L
+        val hours = elapsedSeconds / 3600
+        val minutes = (elapsedSeconds % 3600) / 60
+        val seconds = elapsedSeconds % 60
+        return String.format(Locale.US, "%d:%02d:%02d", hours, minutes, seconds)
+    }
+
+    private fun formatSelectedGraphEnergy(): String {
+        val relativeCharge = totalNetChargeMilliAmpHours - graphDisplayZeroChargeMilliAmpHours
+        val relativeEnergy = totalNetEnergyMilliWattHours - graphDisplayZeroEnergyMilliWattHours
+        return if (isChargeUnitSelected()) {
+            formatSignedCharge(relativeCharge)
+        } else {
+            formatSignedEnergyValue(relativeEnergy)
+        }
     }
 
     private fun isDisplayFieldEnabled(key: String): Boolean {
@@ -1115,9 +1141,9 @@ class BatteryCurrentService : Service() {
         capacityDisplayState = capacityEstimator.displayState()
         summaryView.text = buildLiveSummary(now)
         graphView.setPoints(
-            energyHistory.toList(),
+            graphDisplayPoints(),
             selectedEnergyUnit(),
-            sessionStartMs,
+            graphDisplayZeroTimeMs(),
             selectedRightAxisMode(),
             isFahrenheitSelected()
         )
@@ -1826,7 +1852,7 @@ class BatteryCurrentService : Service() {
             styleGraphMenuButton(this, textColor = graphDischargeTextColor)
             text = "Yes"
             setOnClickListener {
-                resetEnergyTotals()
+                resetGraphDisplayOnly()
                 updateGraphOverlay()
                 restoreSecondaryActionRow(row)
             }
@@ -1969,6 +1995,7 @@ class BatteryCurrentService : Service() {
         )
         summary.colorSpan(formatCurrentText(), chargeColor)
         summary.colorSpan(formatSelectedEnergy(), chargeColor)
+        summary.colorSpan(formatSelectedGraphEnergy(), chargeColor)
         summary.colorSpan(formatTemperatureText(), temperatureColor)
         return summary
     }
@@ -2027,18 +2054,51 @@ class BatteryCurrentService : Service() {
         stopSelf()
     }
 
-    private fun resetEnergyTotals() {
+    private fun resetGraphDisplayOnly() {
         val now = System.currentTimeMillis()
-        sessionStartMs = now
-        lastSampleTimestampMs = now
-        totalNetEnergyMilliWattHours = 0.0
-        totalNetChargeMilliAmpHours = 0.0
-        capacityEstimator.resetSegment(totalNetChargeMilliAmpHours)
-        capacityDisplayState = capacityEstimator.displayState()
-        energyHistory.clear()
-        energyHistory.add(EnergyPoint(now, 0.0, 0.0, latestGraphBatteryPercent, latestRoundedMilliAmps?.toDouble(), latestTemperatureC, latestVoltageMv))
-        persistEnergyTracking()
-        updateCurrentDisplay()
+        val latestPoint = energyHistory.lastOrNull()
+
+        graphDisplayZeroTimestampMs = now
+        graphDisplayZeroEnergyMilliWattHours = latestPoint?.energyMilliWattHours ?: totalNetEnergyMilliWattHours
+        graphDisplayZeroChargeMilliAmpHours = latestPoint?.chargeMilliAmpHours ?: totalNetChargeMilliAmpHours
+
+        // Do not touch sessionStartMs, lastSampleTimestampMs, totalNet*,
+        // capacityEstimator, bucket files, or persisted measurement history.
+        graphOverlayView
+            ?.let { ((it as? LinearLayout)?.getChildAt(2) as? LinearLayout)?.getChildAt(0) as? EnergyGraphView }
+            ?.resetViewport()
+    }
+
+    private fun graphDisplayZeroTimeMs(): Long {
+        return graphDisplayZeroTimestampMs.takeIf { it > 0L } ?: sessionStartMs
+    }
+
+    private fun graphDisplayPoints(): List<EnergyPoint> {
+        val zeroMs = graphDisplayZeroTimestampMs
+        if (zeroMs <= 0L) return energyHistory.toList()
+
+        val points = ArrayList<EnergyPoint>()
+        points.add(EnergyPoint(
+            zeroMs,
+            0.0,
+            0.0,
+            latestGraphBatteryPercent,
+            latestRoundedMilliAmps?.toDouble(),
+            latestTemperatureC,
+            latestVoltageMv
+        ))
+
+        energyHistory
+            .asSequence()
+            .filter { it.timestampMs >= zeroMs }
+            .forEach { point ->
+                points.add(point.copy(
+                    energyMilliWattHours = point.energyMilliWattHours - graphDisplayZeroEnergyMilliWattHours,
+                    chargeMilliAmpHours = point.chargeMilliAmpHours - graphDisplayZeroChargeMilliAmpHours
+                ))
+            }
+
+        return points
     }
 
     private fun buildNotification(text: String): Notification {
