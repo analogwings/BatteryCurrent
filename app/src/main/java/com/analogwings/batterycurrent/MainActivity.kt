@@ -272,7 +272,7 @@ private fun BatteryCurrentScreen(
 
         SettingRow(label = "Reset foreground display") {
             StartupActionButton(
-                text = "",
+                text = "■",
                 onClick = onResetOverlayPosition
             )
         }
@@ -305,7 +305,7 @@ private fun BatteryCurrentScreen(
 
         SettingRow(label = "Monitor") {
             StartupActionButton(
-                text = "",
+                text = if (monitoringRunning) "ON" else "OFF",
                 onClick = onMonitorClick,
                 indicatorColor = if (monitoringRunning) Color(0xFF1FA64A) else Color(0xFFD93636)
             )
