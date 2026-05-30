@@ -1827,7 +1827,7 @@ class BatteryCurrentService : Service() {
     private fun createResetButton(): Button {
         return Button(this).apply {
             styleGraphMenuButton(this, textColor = graphDischargeTextColor)
-            text = "Reset"
+            text = "Clear Data"
             setOnClickListener {
                 val row = parent as? LinearLayout ?: return@setOnClickListener
                 showResetConfirmation(row, this)
@@ -1840,7 +1840,7 @@ class BatteryCurrentService : Service() {
 
         row.removeAllViews()
         row.addView(TextView(this).apply {
-            text = "Reset measurement and graph?"
+            text = "Clear memory and reset graph?"
             textSize = 13f
             typeface = Typeface.DEFAULT_BOLD
             setTextColor(Color.WHITE)
