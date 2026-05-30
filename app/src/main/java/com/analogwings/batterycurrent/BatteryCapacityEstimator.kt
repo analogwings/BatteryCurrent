@@ -25,6 +25,19 @@ class BatteryCapacityEstimator(private val context: Context) {
         val sampleCount: Int
     )
 
+    data class CapacityEventSummary(
+        val startTimestampMs: Long,
+        val endTimestampMs: Long,
+        val direction: String,
+        val avgCurrentMa: Double?,
+        val avgTempC: Double?,
+        val avgVoltageMv: Double?,
+        val mahAdded: Int,
+        val capacityEstimateMah: Int,
+        val peukertK: Double?,
+        val peukertAdjustedCapacityMah: Int?
+    )
+
     private data class ActiveEvent(
         val direction: Int,
         val startTimestampMs: Long,
@@ -32,7 +45,9 @@ class BatteryCapacityEstimator(private val context: Context) {
         val currentSampleCount: Int,
         val currentMagnitudeSumMa: Double,
         val temperatureSampleCount: Int,
-        val temperatureSumC: Double
+        val temperatureSumC: Double,
+        val voltageSampleCount: Int,
+        val voltageSumMv: Double
     )
 
     private data class DailyCapacityReading(
@@ -87,7 +102,7 @@ class BatteryCapacityEstimator(private val context: Context) {
         val direction = if (averageMilliAmps > 0.0) CHARGING else DISCHARGING
         val previousPercent = prefs.getInt(LAST_BATTERY_PERCENT_KEY, UNKNOWN_PERCENT)
             .takeIf { it != UNKNOWN_PERCENT }
-        processEventSample(batteryPercent, previousPercent, totalChargeMah, direction, averageMilliAmps, temperatureC)
+        processEventSample(batteryPercent, previousPercent, totalChargeMah, direction, averageMilliAmps, temperatureC, voltageMv)
         prefs.edit().putInt(LAST_BATTERY_PERCENT_KEY, batteryPercent).apply()
         return displayState()
     }
@@ -127,13 +142,68 @@ class BatteryCapacityEstimator(private val context: Context) {
             }
     }
 
+    fun eventsForDay(dayTimestampMs: Long): List<CapacityEventSummary> {
+        if (!eventsFile.exists()) return emptyList()
+        val targetDay = dayStartMs(dayTimestampMs)
+        val lines = eventsFile.readText()
+            .replace("\\n", "\n")
+            .lines()
+            .filter { it.isNotBlank() }
+        if (lines.size < 2) return emptyList()
+
+        val headers = lines.first().split(",").map { it.trim() }
+        fun indexOf(vararg names: String): Int {
+            return names.mapNotNull { name ->
+                headers.indexOfFirst { it.equals(name, ignoreCase = true) }.takeIf { it >= 0 }
+            }.firstOrNull() ?: -1
+        }
+
+        val startIndex = indexOf("Time_date_start")
+        val directionIndex = indexOf("Direction")
+        val startMahIndex = indexOf("mAh_start")
+        val endIndex = indexOf("Time_date_end")
+        val endMahIndex = indexOf("mAh_end")
+        val avgCurrentIndex = indexOf("AvgCurrent_mA")
+        val avgTempIndex = indexOf("AvgTemp_C")
+        val avgVoltageIndex = indexOf("AvgVoltage_mV", "AvgVoltageMv", "AvgVoltage")
+        val peukertIndex = indexOf("PeukertK", "Peukert_k", "PeukertConstant")
+        val adjustedIndex = indexOf("PeukertAdjustedCapacity_mAh")
+
+        return lines.drop(1).mapNotNull { line ->
+            val parts = line.split(",")
+            val startTimestamp = parseEventTimestamp(parts.getOrNull(startIndex)?.trim()) ?: return@mapNotNull null
+            val endTimestamp = parseEventTimestamp(parts.getOrNull(endIndex)?.trim()) ?: startTimestamp
+            if (dayStartMs(startTimestamp) != targetDay && dayStartMs(endTimestamp) != targetDay) {
+                return@mapNotNull null
+            }
+
+            val startMah = parts.getOrNull(startMahIndex)?.toDoubleOrNull() ?: return@mapNotNull null
+            val endMah = parts.getOrNull(endMahIndex)?.toDoubleOrNull() ?: return@mapNotNull null
+            val capacityEstimate = (abs(endMah - startMah) * 100.0 / EVENT_PERCENT_SPAN).roundToInt()
+
+            CapacityEventSummary(
+                startTimestampMs = startTimestamp,
+                endTimestampMs = endTimestamp,
+                direction = parts.getOrNull(directionIndex)?.ifBlank { null } ?: "event",
+                avgCurrentMa = parts.getOrNull(avgCurrentIndex)?.toDoubleOrNull(),
+                avgTempC = parts.getOrNull(avgTempIndex)?.toDoubleOrNull(),
+                avgVoltageMv = parts.getOrNull(avgVoltageIndex)?.toDoubleOrNull(),
+                mahAdded = abs(endMah - startMah).roundToInt(),
+                capacityEstimateMah = capacityEstimate,
+                peukertK = parts.getOrNull(peukertIndex)?.toDoubleOrNull(),
+                peukertAdjustedCapacityMah = parts.getOrNull(adjustedIndex)?.toIntOrNull()
+            )
+        }.sortedBy { it.startTimestampMs }
+    }
+
     private fun processEventSample(
         batteryPercent: Int,
         previousPercent: Int?,
         totalChargeMah: Double,
         direction: Int,
         averageMilliAmps: Double,
-        temperatureC: Double?
+        temperatureC: Double?,
+        voltageMv: Int?
     ) {
         if (isPausedAfterReset()) {
             if (shouldStartEvent(batteryPercent, previousPercent, direction)) {
@@ -153,11 +223,11 @@ class BatteryCapacityEstimator(private val context: Context) {
                 pauseUntilNextThresholdCrossing()
                 return
             }
-            maybeStartEvent(batteryPercent, previousPercent, totalChargeMah, direction, averageMilliAmps, temperatureC)
+            maybeStartEvent(batteryPercent, previousPercent, totalChargeMah, direction, averageMilliAmps, temperatureC, voltageMv)
             return
         }
 
-        val updatedActiveEvent = addEventSample(activeEvent, averageMilliAmps, temperatureC)
+        val updatedActiveEvent = addEventSample(activeEvent, averageMilliAmps, temperatureC, voltageMv)
 
         when (direction) {
             CHARGING -> {
@@ -190,7 +260,8 @@ class BatteryCapacityEstimator(private val context: Context) {
         totalChargeMah: Double,
         direction: Int,
         averageMilliAmps: Double,
-        temperatureC: Double?
+        temperatureC: Double?,
+        voltageMv: Int?
     ) {
         val shouldStart = shouldStartEvent(batteryPercent, previousPercent, direction)
         if (!shouldStart) {
@@ -205,7 +276,9 @@ class BatteryCapacityEstimator(private val context: Context) {
             currentSampleCount = 1,
             currentMagnitudeSumMa = abs(averageMilliAmps),
             temperatureSampleCount = if (temperatureC != null) 1 else 0,
-            temperatureSumC = temperatureC ?: 0.0
+            temperatureSumC = temperatureC ?: 0.0,
+            voltageSampleCount = if (voltageMv != null) 1 else 0,
+            voltageSumMv = voltageMv?.toDouble() ?: 0.0
         ))
     }
 
@@ -241,6 +314,9 @@ class BatteryCapacityEstimator(private val context: Context) {
         val avgTempC = activeEvent.temperatureSumC
             .takeIf { activeEvent.temperatureSampleCount > 0 }
             ?.let { it / activeEvent.temperatureSampleCount }
+        val avgVoltageMv = activeEvent.voltageSumMv
+            .takeIf { activeEvent.voltageSampleCount > 0 }
+            ?.let { it / activeEvent.voltageSampleCount }
         val peukertK = estimatePeukertK(capacityMah, avgCurrentMa)
         val peukertAdjustedCapacityMah = peukertAdjustedCapacity(capacityMah, avgCurrentMa, peukertK)
 
@@ -252,6 +328,7 @@ class BatteryCapacityEstimator(private val context: Context) {
             endChargeMah = endChargeMah,
             avgCurrentMa = avgCurrentMa,
             avgTempC = avgTempC,
+            avgVoltageMv = avgVoltageMv,
             peukertK = peukertK,
             peukertAdjustedCapacityMah = peukertAdjustedCapacityMah
         )
@@ -267,10 +344,11 @@ class BatteryCapacityEstimator(private val context: Context) {
         endChargeMah: Double,
         avgCurrentMa: Double?,
         avgTempC: Double?,
+        avgVoltageMv: Double?,
         peukertK: Double?,
         peukertAdjustedCapacityMah: Int?
     ) {
-        val header = "Time_date_start,Direction,mAh_start,Time_date_end,mAh_end,AvgCurrent_mA,AvgTemp_C,PeukertK,PeukertAdjustedCapacity_mAh"
+        val header = "Time_date_start,Direction,mAh_start,Time_date_end,mAh_end,AvgCurrent_mA,AvgTemp_C,AvgVoltage_mV,PeukertK,PeukertAdjustedCapacity_mAh"
         val row = listOf(
             formatEventTimestamp(startTimestampMs),
             directionLabel(direction),
@@ -279,24 +357,27 @@ class BatteryCapacityEstimator(private val context: Context) {
             endChargeMah.roundToInt().toString(),
             avgCurrentMa?.let { String.format(Locale.US, "%.0f", it) } ?: "",
             avgTempC?.let { String.format(Locale.US, "%.1f", it) } ?: "",
+            avgVoltageMv?.let { String.format(Locale.US, "%.0f", it) } ?: "",
             peukertK?.let { String.format(Locale.US, "%.4f", it) } ?: "",
             peukertAdjustedCapacityMah?.toString() ?: ""
         ).joinToString(",")
 
         ensureEventsHeader(header)
         if (!eventsFile.exists() || eventsFile.length() == 0L) {
-            eventsFile.writeText("$header\\n$row")
+            eventsFile.writeText("$header\n$row")
         } else {
-            eventsFile.appendText("\\n$row")
+            eventsFile.appendText("\n$row")
         }
     }
 
-    private fun addEventSample(activeEvent: ActiveEvent, averageMilliAmps: Double, temperatureC: Double?): ActiveEvent {
+    private fun addEventSample(activeEvent: ActiveEvent, averageMilliAmps: Double, temperatureC: Double?, voltageMv: Int?): ActiveEvent {
         val updatedEvent = activeEvent.copy(
             currentSampleCount = activeEvent.currentSampleCount + 1,
             currentMagnitudeSumMa = activeEvent.currentMagnitudeSumMa + abs(averageMilliAmps),
             temperatureSampleCount = activeEvent.temperatureSampleCount + if (temperatureC != null) 1 else 0,
-            temperatureSumC = activeEvent.temperatureSumC + (temperatureC ?: 0.0)
+            temperatureSumC = activeEvent.temperatureSumC + (temperatureC ?: 0.0),
+            voltageSampleCount = activeEvent.voltageSampleCount + if (voltageMv != null) 1 else 0,
+            voltageSumMv = activeEvent.voltageSumMv + (voltageMv?.toDouble() ?: 0.0)
         )
         writeActiveEvent(updatedEvent)
         return updatedEvent
@@ -307,7 +388,16 @@ class BatteryCapacityEstimator(private val context: Context) {
         val lines = eventsFile.readLines()
         if (lines.isEmpty() || lines.first() == header) return
         if (lines.first().startsWith("Time_date_start,")) {
-            eventsFile.writeText((listOf(header) + lines.drop(1)).joinToString("\n"))
+            val migratedRows = lines.drop(1).map { line ->
+                val parts = line.split(",")
+                if (parts.size == 9) {
+                    // Old format had PeukertK immediately after AvgTemp_C. Insert blank AvgVoltage_mV.
+                    (parts.take(7) + "" + parts.drop(7)).joinToString(",")
+                } else {
+                    line
+                }
+            }
+            eventsFile.writeText((listOf(header) + migratedRows).joinToString("\n"))
         }
     }
 
@@ -384,7 +474,7 @@ class BatteryCapacityEstimator(private val context: Context) {
         if (!eventsFile.exists()) return emptyList()
         return eventsFile.readLines().drop(1).mapNotNull { line ->
             val parts = line.split(",")
-            if (parts.size < 9) return@mapNotNull null
+            if (parts.size < 8) return@mapNotNull null
             val startCharge = parts[2].toDoubleOrNull() ?: return@mapNotNull null
             val endCharge = parts[4].toDoubleOrNull() ?: return@mapNotNull null
             val avgCurrent = parts[5].toDoubleOrNull() ?: return@mapNotNull null
@@ -429,7 +519,9 @@ class BatteryCapacityEstimator(private val context: Context) {
             currentSampleCount = prefs.getInt(ACTIVE_EVENT_CURRENT_SAMPLE_COUNT_KEY, 0),
             currentMagnitudeSumMa = prefs.getFloat(ACTIVE_EVENT_CURRENT_SUM_KEY, 0f).toDouble(),
             temperatureSampleCount = prefs.getInt(ACTIVE_EVENT_TEMPERATURE_SAMPLE_COUNT_KEY, 0),
-            temperatureSumC = prefs.getFloat(ACTIVE_EVENT_TEMPERATURE_SUM_KEY, 0f).toDouble()
+            temperatureSumC = prefs.getFloat(ACTIVE_EVENT_TEMPERATURE_SUM_KEY, 0f).toDouble(),
+            voltageSampleCount = prefs.getInt(ACTIVE_EVENT_VOLTAGE_SAMPLE_COUNT_KEY, 0),
+            voltageSumMv = prefs.getFloat(ACTIVE_EVENT_VOLTAGE_SUM_KEY, 0f).toDouble()
         )
     }
 
@@ -442,6 +534,8 @@ class BatteryCapacityEstimator(private val context: Context) {
             .putFloat(ACTIVE_EVENT_CURRENT_SUM_KEY, event.currentMagnitudeSumMa.toFloat())
             .putInt(ACTIVE_EVENT_TEMPERATURE_SAMPLE_COUNT_KEY, event.temperatureSampleCount)
             .putFloat(ACTIVE_EVENT_TEMPERATURE_SUM_KEY, event.temperatureSumC.toFloat())
+            .putInt(ACTIVE_EVENT_VOLTAGE_SAMPLE_COUNT_KEY, event.voltageSampleCount)
+            .putFloat(ACTIVE_EVENT_VOLTAGE_SUM_KEY, event.voltageSumMv.toFloat())
             .apply()
     }
 
@@ -454,6 +548,8 @@ class BatteryCapacityEstimator(private val context: Context) {
             .remove(ACTIVE_EVENT_CURRENT_SUM_KEY)
             .remove(ACTIVE_EVENT_TEMPERATURE_SAMPLE_COUNT_KEY)
             .remove(ACTIVE_EVENT_TEMPERATURE_SUM_KEY)
+            .remove(ACTIVE_EVENT_VOLTAGE_SAMPLE_COUNT_KEY)
+            .remove(ACTIVE_EVENT_VOLTAGE_SUM_KEY)
             .apply()
     }
 
@@ -619,6 +715,15 @@ class BatteryCapacityEstimator(private val context: Context) {
         return SimpleDateFormat("yyyy_MM_dd_HHmm", Locale.US).format(Date(timestampMs))
     }
 
+    private fun parseEventTimestamp(text: String?): Long? {
+        if (text.isNullOrBlank()) return null
+        return try {
+            SimpleDateFormat("yyyy_MM_dd_HHmm", Locale.US).parse(text)?.time
+        } catch (_: Exception) {
+            null
+        }
+    }
+
     private fun directionLabel(direction: Int): String {
         return if (direction == CHARGING) "charge" else "discharge"
     }
@@ -640,6 +745,8 @@ class BatteryCapacityEstimator(private val context: Context) {
         private const val ACTIVE_EVENT_CURRENT_SUM_KEY = "active_event_current_sum_ma"
         private const val ACTIVE_EVENT_TEMPERATURE_SAMPLE_COUNT_KEY = "active_event_temperature_sample_count"
         private const val ACTIVE_EVENT_TEMPERATURE_SUM_KEY = "active_event_temperature_sum_c"
+        private const val ACTIVE_EVENT_VOLTAGE_SAMPLE_COUNT_KEY = "active_event_voltage_sample_count"
+        private const val ACTIVE_EVENT_VOLTAGE_SUM_KEY = "active_event_voltage_sum_mv"
         private const val EVENT_PAUSED_AFTER_RESET_KEY = "event_paused_after_reset"
         private const val LAST_BATTERY_PERCENT_KEY = "last_battery_percent"
         private const val UNKNOWN_PERCENT = -1

@@ -34,6 +34,7 @@ import android.view.View
 import android.view.WindowManager
 import android.widget.Button
 import android.widget.LinearLayout
+import android.widget.ScrollView
 import android.widget.TextView
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.app.NotificationCompat
@@ -81,6 +82,7 @@ class BatteryCurrentService : Service() {
     private var overlayView: TextView? = null
     private var graphOverlayView: LinearLayout? = null
     private var capacityHistoryPopupView: View? = null
+    private var capacityEventDetailsPopupView: View? = null
     private var graphMenuCollapsed = false
     private val capacityEstimator by lazy { BatteryCapacityEstimator(this) }
 
@@ -1408,7 +1410,8 @@ class BatteryCurrentService : Service() {
                     addCapacityHistoryRow(
                         dateFormat.format(Date(row.timestampMs)),
                         row.averageCapacityMah.toString(),
-                        row.sampleCount.toString()
+                        row.sampleCount.toString(),
+                        onClick = { showCapacityEventDetailsPopup(row.timestampMs) }
                     )
                 }
             }
@@ -1428,12 +1431,21 @@ class BatteryCurrentService : Service() {
         dateText: String,
         capacityText: String,
         countText: String,
-        isHeader: Boolean = false
+        isHeader: Boolean = false,
+        onClick: (() -> Unit)? = null
     ) {
         addView(LinearLayout(this@BatteryCurrentService).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             setPadding(0, if (isHeader) 10 else 3, 0, 3)
+            isClickable = onClick != null
+            if (onClick != null) {
+                background = GradientDrawable().apply {
+                    cornerRadius = 8f
+                    setColor(Color.argb(18, 255, 255, 255))
+                }
+                setOnClickListener { onClick() }
+            }
 
             addCapacityHistoryCell(dateText, 1.9f, Gravity.START, isHeader)
             addCapacityHistoryCell(capacityText, 1.0f, Gravity.END, isHeader)
@@ -1457,7 +1469,143 @@ class BatteryCurrentService : Service() {
         }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, weight))
     }
 
+
+    private fun showCapacityEventDetailsPopup(dayTimestampMs: Long) {
+        val graphContainer = graphOverlayView ?: return
+        removeCapacityEventDetailsPopup()
+
+        val dateFormat = SimpleDateFormat("MMM d, yyyy", Locale.US)
+        val events = capacityEstimator.eventsForDay(dayTimestampMs)
+        val popup = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = GradientDrawable().apply {
+                cornerRadius = 18f
+                setColor(Color.argb(242, 18, 20, 25))
+                setStroke(2, Color.argb(190, 255, 255, 255))
+            }
+            setPadding(18, 14, 18, 14)
+            elevation = 32f
+
+            addView(LinearLayout(this@BatteryCurrentService).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                addView(TextView(this@BatteryCurrentService).apply {
+                    text = "Events for ${dateFormat.format(Date(dayTimestampMs))}"
+                    textSize = 13f
+                    setTypeface(typeface, Typeface.BOLD)
+                    setTextColor(Color.WHITE)
+                }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+                addView(Button(this@BatteryCurrentService).apply {
+                    styleCloseButton(this)
+                    text = "x"
+                    setOnClickListener { removeCapacityEventDetailsPopup() }
+                })
+            })
+
+            val scrollContent = LinearLayout(this@BatteryCurrentService).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(0, 8, 0, 0)
+                if (events.isEmpty()) {
+                    addView(TextView(this@BatteryCurrentService).apply {
+                        text = "No event records for this date"
+                        textSize = 12f
+                        setTextColor(Color.argb(220, 255, 255, 255))
+                        gravity = Gravity.CENTER
+                        setPadding(0, 14, 0, 4)
+                    })
+                } else {
+                    events.forEachIndexed { index, event ->
+                        addCapacityEventDetailCard(index + 1, event)
+                    }
+                }
+            }
+
+            addView(ScrollView(this@BatteryCurrentService).apply {
+                addView(scrollContent)
+            }, LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                460
+            ).apply {
+                setMargins(0, 6, 0, 0)
+            })
+        }
+
+        capacityEventDetailsPopupView = popup
+        val insertIndex = (graphContainer.childCount - 1).coerceAtLeast(0)
+        graphContainer.addView(popup, insertIndex, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT
+        ).apply {
+            setMargins(0, 10, 0, 4)
+        })
+    }
+
+    private fun LinearLayout.addCapacityEventDetailCard(
+        eventNumber: Int,
+        event: BatteryCapacityEstimator.CapacityEventSummary
+    ) {
+        val timeFormat = SimpleDateFormat("h:mm a", Locale.US)
+        addView(LinearLayout(this@BatteryCurrentService).apply {
+            orientation = LinearLayout.VERTICAL
+            background = GradientDrawable().apply {
+                cornerRadius = 12f
+                setColor(Color.argb(38, 255, 255, 255))
+                setStroke(1, Color.argb(80, 255, 255, 255))
+            }
+            setPadding(14, 12, 14, 12)
+
+            addView(TextView(this@BatteryCurrentService).apply {
+                text = "Event $eventNumber (${event.direction})"
+                textSize = 12f
+                setTypeface(Typeface.MONOSPACE, Typeface.BOLD)
+                setTextColor(graphEstimateLabelColor)
+            })
+            addCapacityEventLine("Start", timeFormat.format(Date(event.startTimestampMs)))
+            addCapacityEventLine("End", timeFormat.format(Date(event.endTimestampMs)))
+            addCapacityEventLine("Avg current", event.avgCurrentMa?.let { String.format(Locale.US, "%.0f mA", it) } ?: "n/a")
+            addCapacityEventLine("Avg temp", event.avgTempC?.let { String.format(Locale.US, "%.1f C", it) } ?: "n/a")
+            addCapacityEventLine("Avg voltage", event.avgVoltageMv?.let { String.format(Locale.US, "%.0f mV", it) } ?: "n/a")
+            addCapacityEventLine("mAh added", String.format(Locale.US, "%d mAh", event.mahAdded))
+            addCapacityEventLine("Capacity est", String.format(Locale.US, "%d mAh", event.capacityEstimateMah))
+            event.peukertAdjustedCapacityMah?.let {
+                addCapacityEventLine("Peukert adjusted", String.format(Locale.US, "%d mAh", it))
+            }
+        }, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT
+        ).apply {
+            setMargins(0, 7, 0, 7)
+        })
+    }
+
+    private fun LinearLayout.addCapacityEventLine(label: String, value: String) {
+        addView(LinearLayout(this@BatteryCurrentService).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            addView(TextView(this@BatteryCurrentService).apply {
+                text = "$label:"
+                textSize = 11f
+                setTypeface(Typeface.MONOSPACE, Typeface.NORMAL)
+                setTextColor(Color.argb(220, 255, 255, 255))
+            }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1.2f))
+            addView(TextView(this@BatteryCurrentService).apply {
+                text = value
+                textSize = 11f
+                setTypeface(Typeface.MONOSPACE, Typeface.NORMAL)
+                setTextColor(Color.WHITE)
+                gravity = Gravity.END
+            }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1.1f))
+        })
+    }
+
+    private fun removeCapacityEventDetailsPopup() {
+        val view = capacityEventDetailsPopupView ?: return
+        (view.parent as? LinearLayout)?.removeView(view)
+        capacityEventDetailsPopupView = null
+    }
+
     private fun removeCapacityHistoryPopup() {
+        removeCapacityEventDetailsPopup()
         val view = capacityHistoryPopupView ?: return
         (view.parent as? LinearLayout)?.removeView(view)
         capacityHistoryPopupView = null
