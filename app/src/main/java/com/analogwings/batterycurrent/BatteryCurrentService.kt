@@ -83,6 +83,7 @@ class BatteryCurrentService : Service() {
     private var graphOverlayView: LinearLayout? = null
     private var capacityHistoryPopupView: View? = null
     private var capacityEventDetailsPopupView: View? = null
+    private var socCurvePopupView: View? = null
     private var graphMenuCollapsed = false
     private val capacityEstimator by lazy { BatteryCapacityEstimator(this) }
 
@@ -1598,6 +1599,82 @@ class BatteryCurrentService : Service() {
         })
     }
 
+    private fun showSocCurvePopup() {
+        val graphContainer = graphOverlayView ?: return
+        removeSocCurvePopup()
+
+        val points = capacityEstimator.socLinearityPoints()
+        val popup = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = GradientDrawable().apply {
+                cornerRadius = 18f
+                setColor(Color.argb(244, 18, 20, 25))
+                setStroke(2, Color.argb(190, 255, 255, 255))
+            }
+            setPadding(18, 14, 18, 14)
+            elevation = 32f
+
+            addView(LinearLayout(this@BatteryCurrentService).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                addView(TextView(this@BatteryCurrentService).apply {
+                    text = "SOC linearity deviation"
+                    textSize = 13f
+                    setTypeface(typeface, Typeface.BOLD)
+                    setTextColor(Color.WHITE)
+                }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+                addView(Button(this@BatteryCurrentService).apply {
+                    styleCloseButton(this)
+                    text = "x"
+                    setOnClickListener { removeSocCurvePopup() }
+                })
+            })
+
+            addView(TextView(this@BatteryCurrentService).apply {
+                text = "Deviation from ideal linear SOC. 0.05 means that bucket stores 5% more mAh than the learned average bucket."
+                textSize = 11f
+                setTextColor(Color.argb(220, 255, 255, 255))
+                setPadding(0, 6, 0, 8)
+            })
+
+            addView(SocBucketCurveView(this@BatteryCurrentService).apply {
+                setPoints(points)
+            }, LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                430
+            ))
+
+            val learnedBucketCount = points.size
+            val maxDeviation = points.maxOfOrNull { abs(it.deviationFromIdeal) }
+            addView(TextView(this@BatteryCurrentService).apply {
+                text = if (learnedBucketCount == 0) {
+                    "No SOC bucket data yet. Data fills in as battery % changes while monitoring."
+                } else {
+                    String.format(Locale.US, "%d buckets learned, max deviation %.3f", learnedBucketCount, maxDeviation ?: 0.0)
+                }
+                textSize = 11f
+                setTextColor(graphEstimateLabelColor)
+                gravity = Gravity.CENTER
+                setPadding(0, 8, 0, 0)
+            })
+        }
+
+        socCurvePopupView = popup
+        val insertIndex = (graphContainer.childCount - 1).coerceAtLeast(0)
+        graphContainer.addView(popup, insertIndex, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT
+        ).apply {
+            setMargins(0, 10, 0, 4)
+        })
+    }
+
+    private fun removeSocCurvePopup() {
+        val view = socCurvePopupView ?: return
+        (view.parent as? LinearLayout)?.removeView(view)
+        socCurvePopupView = null
+    }
+
     private fun removeCapacityEventDetailsPopup() {
         val view = capacityEventDetailsPopupView ?: return
         (view.parent as? LinearLayout)?.removeView(view)
@@ -1606,6 +1683,7 @@ class BatteryCurrentService : Service() {
 
     private fun removeCapacityHistoryPopup() {
         removeCapacityEventDetailsPopup()
+        removeSocCurvePopup()
         val view = capacityHistoryPopupView ?: return
         (view.parent as? LinearLayout)?.removeView(view)
         capacityHistoryPopupView = null
@@ -1667,6 +1745,17 @@ class BatteryCurrentService : Service() {
                 addView(createLockToggleButton())
                 addView(createEnergyUnitToggleButton())
                 addView(createResetButton())
+            })
+
+            addView(LinearLayout(this@BatteryCurrentService).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER
+
+                addView(Button(this@BatteryCurrentService).apply {
+                    styleGraphMenuButton(this)
+                    text = "SOC Curve"
+                    setOnClickListener { showSocCurvePopup() }
+                })
             })
         }
     }
@@ -1897,6 +1986,7 @@ class BatteryCurrentService : Service() {
 
     private fun removeGraphOverlay() {
         removeCapacityHistoryPopup()
+        removeSocCurvePopup()
         val view = graphOverlayView ?: return
         try {
             windowManager?.removeView(view)
@@ -2013,6 +2103,159 @@ class BatteryCurrentService : Service() {
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
+
+    private inner class SocBucketCurveView(context: Context) : View(context) {
+        private val points = ArrayList<BatteryCapacityEstimator.SocLinearityPoint>()
+        private val axisPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.argb(190, 255, 255, 255)
+            strokeWidth = 2f
+        }
+        private val gridPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.argb(55, 255, 255, 255)
+            strokeWidth = 1f
+        }
+        private val curvePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.rgb(95, 180, 255)
+            style = Paint.Style.STROKE
+            strokeWidth = 5f
+        }
+        private val pointPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.WHITE
+            style = Paint.Style.FILL
+        }
+        private val idealPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = graphEstimateLabelColor
+            strokeWidth = 3f
+            pathEffect = DashPathEffect(floatArrayOf(10f, 8f), 0f)
+        }
+        private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.WHITE
+            textSize = 24f
+            typeface = Typeface.MONOSPACE
+        }
+        private val labelPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.argb(210, 255, 255, 255)
+            textSize = 21f
+            typeface = Typeface.MONOSPACE
+        }
+        private val bounds = RectF()
+
+        fun setPoints(items: List<BatteryCapacityEstimator.SocLinearityPoint>) {
+            points.clear()
+            points.addAll(items.sortedBy { it.midpointPct })
+            invalidate()
+        }
+
+        override fun onDraw(canvas: Canvas) {
+            super.onDraw(canvas)
+            val left = 122f
+            val top = 44f
+            val right = width - 34f
+            val bottom = height - 86f
+            bounds.set(left, top, right, bottom)
+
+            val maxAbsDeviation = points.maxOfOrNull { abs(it.deviationFromIdeal) } ?: 0.0
+            val yLimit = niceDeviationLimit(maxAbsDeviation)
+
+            drawDeviationTicks(canvas, yLimit)
+            drawSocAxisTicks(canvas)
+
+            canvas.drawLine(bounds.left, bounds.bottom, bounds.right, bounds.bottom, axisPaint)
+            canvas.drawLine(bounds.left, bounds.top, bounds.left, bounds.bottom, axisPaint)
+
+            val zeroY = yForDeviation(0.0, yLimit)
+            canvas.drawLine(bounds.left, zeroY, bounds.right, zeroY, idealPaint)
+
+            if (points.isEmpty()) {
+                canvas.drawText("No SOC bucket data yet", bounds.left + 24f, bounds.centerY(), textPaint)
+                canvas.drawText("Use the phone while monitoring so %SOC changes.", bounds.left + 24f, bounds.centerY() + 34f, labelPaint)
+                drawAxisLabels(canvas)
+                return
+            }
+
+            val plotted = points.map { point ->
+                val x = xForPct(point.midpointPct)
+                val y = yForDeviation(point.deviationFromIdeal, yLimit)
+                Triple(point, x, y)
+            }
+
+            if (plotted.size >= 2) {
+                val path = Path()
+                path.moveTo(plotted.first().second, plotted.first().third)
+                for (i in 1 until plotted.size) {
+                    val previous = plotted[i - 1]
+                    val current = plotted[i]
+                    val midX = (previous.second + current.second) / 2f
+                    path.cubicTo(midX, previous.third, midX, current.third, current.second, current.third)
+                }
+                canvas.drawPath(path, curvePaint)
+            }
+
+            plotted.forEach { (point, x, y) ->
+                pointPaint.color = if (point.sampleCount >= 3) {
+                    Color.WHITE
+                } else {
+                    Color.argb(150, 255, 255, 255)
+                }
+                canvas.drawCircle(x, y, 6f, pointPaint)
+            }
+
+            canvas.drawText("dashed = 0% ideal", bounds.right - 250f, 28f, labelPaint)
+            drawAxisLabels(canvas)
+        }
+
+        private fun drawAxisLabels(canvas: Canvas) {
+            labelPaint.textAlign = Paint.Align.CENTER
+            canvas.drawText("% SOC", bounds.centerX(), height - 18f, labelPaint)
+
+            canvas.save()
+            canvas.rotate(-90f, 24f, bounds.centerY())
+            canvas.drawText("% deviation", 24f, bounds.centerY(), labelPaint)
+            canvas.restore()
+            labelPaint.textAlign = Paint.Align.LEFT
+        }
+
+        private fun drawSocAxisTicks(canvas: Canvas) {
+            labelPaint.textAlign = Paint.Align.CENTER
+            for (pct in 0..100 step 10) {
+                val x = xForPct(pct)
+                canvas.drawLine(x, bounds.top, x, bounds.bottom, gridPaint)
+                canvas.drawLine(x, bounds.bottom, x, bounds.bottom + 9f, axisPaint)
+                canvas.drawText(pct.toString(), x, bounds.bottom + 34f, labelPaint)
+            }
+            labelPaint.textAlign = Paint.Align.LEFT
+        }
+
+        private fun xForPct(percent: Int): Float {
+            val fraction = (percent.coerceIn(0, 100) / 100.0).toFloat()
+            return bounds.left + fraction * bounds.width()
+        }
+
+        private fun yForDeviation(value: Double, yLimit: Double): Float {
+            val fraction = ((value.coerceIn(-yLimit, yLimit) + yLimit) / (2.0 * yLimit)).toFloat()
+            return bounds.bottom - fraction * bounds.height()
+        }
+
+        private fun drawDeviationTicks(canvas: Canvas, yLimit: Double) {
+            val limitPct = (yLimit * 100.0).roundToInt().coerceAtLeast(5)
+            labelPaint.textAlign = Paint.Align.RIGHT
+            for (pct in -limitPct..limitPct) {
+                val value = pct / 100.0
+                val y = yForDeviation(value, yLimit)
+                canvas.drawLine(bounds.left, y, bounds.right, y, gridPaint)
+                canvas.drawLine(bounds.left - 9f, y, bounds.left, y, axisPaint)
+                canvas.drawText(pct.toString(), bounds.left - 16f, y + 7f, labelPaint)
+            }
+            labelPaint.textAlign = Paint.Align.LEFT
+        }
+
+        private fun niceDeviationLimit(value: Double): Double {
+            // Start with +/-5%. If a device produces larger deviation values, autoscale
+            // upward in exact 1% increments so points do not clip and tick spacing stays linear.
+            val scaled = ceil(value.coerceAtLeast(0.05) * 100.0) / 100.0
+            return scaled.coerceAtLeast(0.05)
+        }
+    }
 
     private class EnergyGraphView(context: Context) : View(context) {
         private val points = ArrayList<EnergyPoint>()
