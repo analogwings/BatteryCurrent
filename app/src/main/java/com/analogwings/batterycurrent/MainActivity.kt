@@ -55,6 +55,7 @@ import com.analogwings.batterycurrent.ui.theme.BatteryCurrentTheme
 class MainActivity : ComponentActivity() {
 
     private var waitingForOverlayPermission = false
+    private val monitoringRunningState = mutableStateOf(false)
 
     private val notificationPermissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
@@ -65,6 +66,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        monitoringRunningState.value = isMonitoringRunning()
 
         setContent {
             BatteryCurrentTheme {
@@ -77,8 +79,14 @@ class MainActivity : ComponentActivity() {
                         initialLightOverlayEnabled = OverlayThemePreference.isLightBackgroundEnabled(this),
                         initialOriginalCapacityMah = BatteryCapacityReference.originalCapacityMah(this),
                         initialShowCapacityPrompt = !BatteryCapacityReference.hasSeenPrompt(this),
-                        onStart = { requestPermissionThenStart() },
-                        onStop = { stopBatteryService() },
+                        monitoringRunning = monitoringRunningState.value,
+                        onMonitorClick = {
+                            if (monitoringRunningState.value) {
+                                stopBatteryService()
+                            } else {
+                                requestPermissionThenStart()
+                            }
+                        },
                         onTemporaryProChanged = { enabled ->
                             ProFeatureGate.setTemporaryProEnabled(this, enabled)
                         },
@@ -100,6 +108,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        monitoringRunningState.value = isMonitoringRunning()
         if (waitingForOverlayPermission && overlayPermissionGranted()) {
             waitingForOverlayPermission = false
             startBatteryServiceAndHideActivity()
@@ -148,6 +157,7 @@ class MainActivity : ComponentActivity() {
 
     private fun startBatteryServiceAndHideActivity() {
         startBatteryService()
+        monitoringRunningState.value = true
 
         // Do not leave the full-screen activity in front; the floating readout is the control surface.
         moveTaskToBack(true)
@@ -162,7 +172,12 @@ class MainActivity : ComponentActivity() {
         } else {
             startService(intent)
         }
-        finish()
+        monitoringRunningState.value = false
+    }
+
+    private fun isMonitoringRunning(): Boolean {
+        return getSharedPreferences(BatteryCurrentService.MONITOR_STATE_PREFS_NAME, MODE_PRIVATE)
+            .getBoolean(BatteryCurrentService.MONITOR_RUNNING_KEY, false)
     }
 
     private fun resetForegroundOverlayPosition() {
@@ -185,8 +200,8 @@ private fun BatteryCurrentScreen(
     initialLightOverlayEnabled: Boolean,
     initialOriginalCapacityMah: Int?,
     initialShowCapacityPrompt: Boolean,
-    onStart: () -> Unit,
-    onStop: () -> Unit,
+    monitoringRunning: Boolean,
+    onMonitorClick: () -> Unit,
     onTemporaryProChanged: (Boolean) -> Unit,
     onLightOverlayChanged: (Boolean) -> Unit,
     onResetOverlayPosition: () -> Unit,
@@ -242,16 +257,7 @@ private fun BatteryCurrentScreen(
 
         Spacer(modifier = Modifier.height(24.dp))
 
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
-        ) {
-            Text(
-                text = "Temporary Pro mode",
-                style = MaterialTheme.typography.bodyLarge,
-                fontWeight = FontWeight.Medium
-            )
+        SettingRow(label = "Temporary Pro mode") {
             Switch(
                 checked = temporaryProEnabled,
                 colors = silverSwitchColors(),
@@ -264,23 +270,16 @@ private fun BatteryCurrentScreen(
 
         Spacer(modifier = Modifier.height(12.dp))
 
-        StartupActionButton(
-            text = "Reset foreground display",
-            onClick = onResetOverlayPosition
-        )
+        SettingRow(label = "Reset foreground display") {
+            StartupActionButton(
+                text = "",
+                onClick = onResetOverlayPosition
+            )
+        }
 
         Spacer(modifier = Modifier.height(12.dp))
 
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
-        ) {
-            Text(
-                text = "Light foreground background",
-                style = MaterialTheme.typography.bodyLarge,
-                fontWeight = FontWeight.Medium
-            )
+        SettingRow(label = "Light foreground background") {
             Switch(
                 checked = lightOverlayEnabled,
                 colors = silverSwitchColors(),
@@ -293,41 +292,46 @@ private fun BatteryCurrentScreen(
 
         Spacer(modifier = Modifier.height(12.dp))
 
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
+        SettingRow(
+            label = originalCapacityMah?.let { "Original capacity: ${it}mAh" } ?: "Original capacity not set"
         ) {
-            Text(
-                modifier = Modifier
-                    .weight(1f)
-                    .padding(end = 12.dp),
-                text = originalCapacityMah?.let { "Original capacity: ${it}mAh" } ?: "Original capacity not set",
-                style = MaterialTheme.typography.bodyLarge,
-                fontWeight = FontWeight.Medium
-            )
             StartupActionButton(
-                text = if (originalCapacityMah == null) "Add" else "Edit",
+                text = "Edit",
                 onClick = { showCapacityDialog = true }
             )
         }
 
-        Spacer(modifier = Modifier.height(24.dp))
+        Spacer(modifier = Modifier.height(18.dp))
 
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceEvenly,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
+        SettingRow(label = "Monitor") {
             StartupActionButton(
-                text = "Start monitoring",
-                onClick = onStart
-            )
-            StartupActionButton(
-                text = "Stop monitoring",
-                onClick = onStop
+                text = "",
+                onClick = onMonitorClick,
+                indicatorColor = if (monitoringRunning) Color(0xFF1FA64A) else Color(0xFFD93636)
             )
         }
+    }
+}
+
+@Composable
+private fun SettingRow(
+    label: String,
+    control: @Composable () -> Unit
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween
+    ) {
+        Text(
+            modifier = Modifier
+                .weight(1f)
+                .padding(end = 12.dp),
+            text = label,
+            style = MaterialTheme.typography.bodyLarge,
+            fontWeight = FontWeight.Medium
+        )
+        control()
     }
 }
 
@@ -344,24 +348,25 @@ private fun silverSwitchColors() = SwitchDefaults.colors(
 @Composable
 private fun StartupActionButton(
     text: String,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    indicatorColor: Color? = null
 ) {
-    val shape = RoundedCornerShape(16.dp)
+    val shape = RoundedCornerShape(8.dp)
+    val silverGradient = Brush.verticalGradient(
+        listOf(
+            Color(0xFFF8FAFB),
+            Color(0xFFDDE2E6),
+            Color(0xFFB8C0C7)
+        )
+    )
+
     Box(
         modifier = Modifier
-            .width(136.dp)
-            .height(68.dp)
+            .width(74.dp)
+            .height(44.dp)
             .shadow(8.dp, shape, clip = false)
             .clip(shape)
-            .background(
-                Brush.verticalGradient(
-                    listOf(
-                        Color(0xFFF8FAFB),
-                        Color(0xFFDDE2E6),
-                        Color(0xFFB8C0C7)
-                    )
-                )
-            )
+            .background(silverGradient)
             .border(2.dp, Color(0xFF6F7780), shape)
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center
@@ -370,9 +375,9 @@ private fun StartupActionButton(
             modifier = Modifier
                 .align(Alignment.TopCenter)
                 .fillMaxWidth()
-                .height(18.dp)
-                .padding(horizontal = 12.dp, vertical = 5.dp)
-                .clip(RoundedCornerShape(12.dp))
+                .height(8.dp)
+                .padding(horizontal = 8.dp, vertical = 2.dp)
+                .clip(RoundedCornerShape(6.dp))
                 .background(
                     Brush.verticalGradient(
                         listOf(
@@ -382,23 +387,39 @@ private fun StartupActionButton(
                     )
                 )
         )
-        Box(
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .fillMaxWidth()
-                .height(18.dp)
-                .padding(horizontal = 12.dp, vertical = 5.dp)
-                .clip(RoundedCornerShape(12.dp))
-                .background(Color(0x18000000))
-        )
-        Text(
-            text = text,
-            style = MaterialTheme.typography.labelLarge,
-            fontWeight = FontWeight.ExtraBold,
-            color = Color(0xFF26313A),
-            textAlign = TextAlign.Center,
-            maxLines = 2
-        )
+
+        if (indicatorColor != null) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .width(64.dp)
+                    .height(12.dp)
+                    .padding(bottom = 1.dp)
+                    .clip(RoundedCornerShape(4.dp))
+                    .background(indicatorColor)
+            )
+        } else {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .height(8.dp)
+                    .padding(horizontal = 8.dp, vertical = 2.dp)
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(Color(0x18000000))
+            )
+        }
+
+        if (text.isNotBlank()) {
+            Text(
+                text = text,
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.ExtraBold,
+                color = Color(0xFF26313A),
+                textAlign = TextAlign.Center,
+                maxLines = 1
+            )
+        }
     }
 }
 

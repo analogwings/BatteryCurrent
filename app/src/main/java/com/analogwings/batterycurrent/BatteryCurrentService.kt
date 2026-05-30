@@ -55,6 +55,8 @@ class BatteryCurrentService : Service() {
         const val ACTION_SHOW_OVERLAY = "com.analogwings.batterycurrent.SHOW_OVERLAY"
         const val ACTION_STOP_MONITORING = "com.analogwings.batterycurrent.STOP_MONITORING"
         const val ACTION_RESET_OVERLAY_POSITION = "com.analogwings.batterycurrent.RESET_OVERLAY_POSITION"
+        const val MONITOR_STATE_PREFS_NAME = "battery_current_monitor_state"
+        const val MONITOR_RUNNING_KEY = "monitor_running"
         private const val ENERGY_UNIT_MWH = "mWh"
         private const val ENERGY_UNIT_MAH = "mAh"
         private const val TEMPERATURE_UNIT_C = "C"
@@ -175,12 +177,20 @@ class BatteryCurrentService : Service() {
         createNotificationChannel()
     }
 
+    private fun setMonitoringRunning(running: Boolean) {
+        getSharedPreferences(MONITOR_STATE_PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putBoolean(MONITOR_RUNNING_KEY, running)
+            .apply()
+    }
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (!startForegroundSafely()) {
             stopSelf()
             return START_NOT_STICKY
         }
 
+        setMonitoringRunning(true)
         initializeEnergyTracking()
         val showOverlay = intent?.action == ACTION_SHOW_OVERLAY
         when (intent?.action) {
@@ -2050,6 +2060,7 @@ class BatteryCurrentService : Service() {
     }
 
     private fun stopMonitoring() {
+        setMonitoringRunning(false)
         persistEnergyTracking()
         stopSelf()
     }
@@ -2177,6 +2188,7 @@ class BatteryCurrentService : Service() {
     override fun onDestroy() {
         handler.removeCallbacks(updateRunnable)
         isUpdateScheduled = false
+        setMonitoringRunning(false)
         persistEnergyTracking()
         removeOverlay()
         handler.removeCallbacks(foregroundIndicatorRunnable)
