@@ -1276,21 +1276,72 @@ class BatteryCurrentService : Service() {
     }
 
     private fun buildCapacityEstimateText(estimateMah: Int): SpannableString {
-        val label = "Estimated battery capacity: "
-        val value = String.format(Locale.US, "%dmAh", estimateMah)
-        return SpannableString(label + value).apply {
+        val capacityLabel = "Estimated battery capacity: "
+        val capacityValue = String.format(Locale.US, "%dmAh", estimateMah)
+        val peukertLabel = "\nPeukert's constant: "
+        val peukertValue = latestPeukertConstantText() ?: "not enough data"
+        val fullText = capacityLabel + capacityValue + peukertLabel + peukertValue
+        val peukertLabelStart = capacityLabel.length + capacityValue.length
+        val peukertValueStart = peukertLabelStart + peukertLabel.length
+
+        return SpannableString(fullText).apply {
             setSpan(
                 ForegroundColorSpan(graphEstimateLabelColor),
                 0,
-                label.length,
+                capacityLabel.length,
                 Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
             )
             setSpan(
                 ForegroundColorSpan(capacityEstimateColor(estimateMah)),
-                label.length,
-                label.length + value.length,
+                capacityLabel.length,
+                capacityLabel.length + capacityValue.length,
                 Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
             )
+            setSpan(
+                ForegroundColorSpan(graphEstimateLabelColor),
+                peukertLabelStart,
+                peukertValueStart,
+                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+            )
+            setSpan(
+                ForegroundColorSpan(graphCoolTextColor),
+                peukertValueStart,
+                fullText.length,
+                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+            )
+        }
+    }
+
+    private fun latestPeukertConstantText(): String? {
+        val eventsFile = java.io.File(filesDir, "battery_capacity_events.csv")
+        if (!eventsFile.exists() || eventsFile.length() == 0L) return null
+
+        return try {
+            val lines = eventsFile.readLines().filter { it.isNotBlank() }
+            if (lines.size < 2) return null
+
+            val headers = lines.first().split(",").map { it.trim() }
+            val peukertIndex = headers.indexOfFirst { header ->
+                header.equals("PeukertK", ignoreCase = true) ||
+                    header.equals("Peukert_k", ignoreCase = true) ||
+                    header.equals("PeukertConstant", ignoreCase = true) ||
+                    header.equals("Peukert's constant", ignoreCase = true)
+            }
+            if (peukertIndex < 0) return null
+
+            lines.asReversed()
+                .dropLast(1)
+                .mapNotNull { line ->
+                    val parts = line.split(",")
+                    parts.getOrNull(peukertIndex)
+                        ?.trim()
+                        ?.takeIf { it.isNotEmpty() }
+                        ?.toDoubleOrNull()
+                }
+                .firstOrNull()
+                ?.let { value -> String.format(Locale.US, "k=%.3f", value) }
+        } catch (_: Exception) {
+            null
         }
     }
 
