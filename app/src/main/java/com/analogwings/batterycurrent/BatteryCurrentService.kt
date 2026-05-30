@@ -1840,7 +1840,7 @@ class BatteryCurrentService : Service() {
 
         row.removeAllViews()
         row.addView(TextView(this).apply {
-            text = "Reset to 0?"
+            text = "Reset measurement and graph?"
             textSize = 13f
             typeface = Typeface.DEFAULT_BOLD
             setTextColor(Color.WHITE)
@@ -1852,7 +1852,7 @@ class BatteryCurrentService : Service() {
             styleGraphMenuButton(this, textColor = graphDischargeTextColor)
             text = "Yes"
             setOnClickListener {
-                resetGraphDisplayOnly()
+                resetMeasurementAndGraph()
                 updateGraphOverlay()
                 restoreSecondaryActionRow(row)
             }
@@ -2054,19 +2054,42 @@ class BatteryCurrentService : Service() {
         stopSelf()
     }
 
-    private fun resetGraphDisplayOnly() {
+    private fun resetMeasurementAndGraph() {
         val now = System.currentTimeMillis()
-        val latestPoint = energyHistory.lastOrNull()
 
-        graphDisplayZeroTimestampMs = now
-        graphDisplayZeroEnergyMilliWattHours = latestPoint?.energyMilliWattHours ?: totalNetEnergyMilliWattHours
-        graphDisplayZeroChargeMilliAmpHours = latestPoint?.chargeMilliAmpHours ?: totalNetChargeMilliAmpHours
+        sessionStartMs = now
+        lastSampleTimestampMs = now
+        totalNetEnergyMilliWattHours = 0.0
+        totalNetChargeMilliAmpHours = 0.0
+        graphDisplayZeroTimestampMs = 0L
+        graphDisplayZeroEnergyMilliWattHours = 0.0
+        graphDisplayZeroChargeMilliAmpHours = 0.0
+        lastPluggedState = isPluggedIn(readBatteryStatus())
 
-        // Do not touch sessionStartMs, lastSampleTimestampMs, totalNet*,
-        // capacityEstimator, bucket files, or persisted measurement history.
+        energyHistory.clear()
+        energyHistory.add(EnergyPoint(
+            now,
+            0.0,
+            0.0,
+            latestGraphBatteryPercent,
+            latestRoundedMilliAmps?.toDouble(),
+            latestTemperatureC,
+            latestVoltageMv
+        ))
+
+        // Overwrite persisted graph/measurement snapshot so old graph data does not return
+        // after the app/service restarts. This does not modify CSV estimator data files.
+        getSharedPreferences(energyPrefsName, Context.MODE_PRIVATE)
+            .edit()
+            .clear()
+            .apply()
+        persistEnergyTracking()
+
         graphOverlayView
             ?.let { ((it as? LinearLayout)?.getChildAt(2) as? LinearLayout)?.getChildAt(0) as? EnergyGraphView }
             ?.resetViewport()
+
+        refreshFloatingOverlayText()
     }
 
     private fun graphDisplayZeroTimeMs(): Long {
@@ -2303,15 +2326,27 @@ class BatteryCurrentService : Service() {
 
         private fun drawDeviationTicks(canvas: Canvas, yLimit: Double) {
             val limitPct = (yLimit * 100.0).roundToInt().coerceAtLeast(5)
+            val tickStepPct = (2.0 * limitPct) / 10.0
+
             labelPaint.textAlign = Paint.Align.RIGHT
-            for (pct in -limitPct..limitPct) {
+            for (tickIndex in 0..10) {
+                val pct = -limitPct + tickIndex * tickStepPct
                 val value = pct / 100.0
                 val y = yForDeviation(value, yLimit)
                 canvas.drawLine(bounds.left, y, bounds.right, y, gridPaint)
                 canvas.drawLine(bounds.left - 9f, y, bounds.left, y, axisPaint)
-                canvas.drawText(pct.toString(), bounds.left - 16f, y + 7f, labelPaint)
+                canvas.drawText(formatDeviationTickLabel(pct), bounds.left - 16f, y + 7f, labelPaint)
             }
             labelPaint.textAlign = Paint.Align.LEFT
+        }
+
+        private fun formatDeviationTickLabel(valuePct: Double): String {
+            val roundedInt = valuePct.roundToInt()
+            return if (abs(valuePct - roundedInt) < 0.05) {
+                roundedInt.toString()
+            } else {
+                String.format(Locale.US, "%.1f", valuePct)
+            }
         }
 
         private fun niceDeviationLimit(value: Double): Double {
