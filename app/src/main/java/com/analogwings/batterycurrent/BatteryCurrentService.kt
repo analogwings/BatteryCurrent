@@ -36,6 +36,7 @@ import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
+import android.widget.Toast
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.app.NotificationCompat
 import java.util.ArrayDeque
@@ -53,6 +54,8 @@ class BatteryCurrentService : Service() {
 
     companion object {
         const val ACTION_SHOW_OVERLAY = "com.analogwings.batterycurrent.SHOW_OVERLAY"
+        const val ACTION_SHOW_GRAPH_OVERLAY = "com.analogwings.batterycurrent.SHOW_GRAPH_OVERLAY"
+        const val ACTION_START_FULL_DISCHARGE_TEST = "com.analogwings.batterycurrent.START_FULL_DISCHARGE_TEST"
         const val ACTION_STOP_MONITORING = "com.analogwings.batterycurrent.STOP_MONITORING"
         const val ACTION_RESET_OVERLAY_POSITION = "com.analogwings.batterycurrent.RESET_OVERLAY_POSITION"
         const val MONITOR_STATE_PREFS_NAME = "battery_current_monitor_state"
@@ -203,6 +206,7 @@ class BatteryCurrentService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        FullDischargeTest.abortIfStale(this)
         if (!startForegroundSafely()) {
             stopSelf()
             return START_NOT_STICKY
@@ -210,7 +214,11 @@ class BatteryCurrentService : Service() {
 
         setMonitoringRunning(true)
         initializeEnergyTracking()
-        val showOverlay = intent?.action == ACTION_SHOW_OVERLAY
+        val showOverlay = intent?.action == ACTION_SHOW_OVERLAY ||
+            intent?.action == ACTION_SHOW_GRAPH_OVERLAY ||
+            intent?.action == ACTION_START_FULL_DISCHARGE_TEST
+        val showGraph = intent?.action == ACTION_SHOW_GRAPH_OVERLAY ||
+            intent?.action == ACTION_START_FULL_DISCHARGE_TEST
         when (intent?.action) {
             ACTION_STOP_MONITORING -> {
                 stopMonitoring()
@@ -230,6 +238,12 @@ class BatteryCurrentService : Service() {
         if (showOverlay) {
             updateCurrentDisplay()
             createOverlayIfAllowed()
+            if (intent?.action == ACTION_START_FULL_DISCHARGE_TEST) {
+                resetMeasurementAndGraph()
+            }
+            if (showGraph) {
+                showGraphOverlay()
+            }
         }
         scheduleNextUpdate(immediate = !showOverlay)
         return START_STICKY
@@ -499,7 +513,7 @@ class BatteryCurrentService : Service() {
 
         val avg = recentMilliAmpSamples.average()
         val now = System.currentTimeMillis()
-        integrateEnergy(now, avg, voltageMv, temperatureC)
+        integrateEnergy(now, avg, voltageMv, temperatureC, pluggedNow)
 
         // Small values around zero tend to flicker. Display them as idle.
         val filtered = if (abs(avg) < 20.0) 0.0 else avg
@@ -512,7 +526,13 @@ class BatteryCurrentService : Service() {
         )
     }
 
-    private fun integrateEnergy(now: Long, averageMilliAmps: Double, voltageMv: Int?, temperatureC: Double?) {
+    private fun integrateEnergy(
+        now: Long,
+        averageMilliAmps: Double,
+        voltageMv: Int?,
+        temperatureC: Double?,
+        pluggedIn: Boolean
+    ) {
         if (lastSampleTimestampMs == 0L) {
             lastSampleTimestampMs = now
             return
@@ -544,6 +564,21 @@ class BatteryCurrentService : Service() {
             temperatureC = temperatureC,
             voltageMv = voltageMv
         )
+        when (FullDischargeTest.processSample(
+            context = this,
+            batteryPercent = latestBatteryPercent,
+            pluggedIn = pluggedIn,
+            totalChargeMah = totalNetChargeMilliAmpHours,
+            currentMa = averageMilliAmps,
+            temperatureC = temperatureC,
+            voltageMv = voltageMv,
+            nowMs = now
+        )) {
+            FullDischargeTest.SampleResult.PENDING -> Unit
+            FullDischargeTest.SampleResult.COMPLETED -> Toast.makeText(this, "Full discharge test saved", Toast.LENGTH_LONG).show()
+            FullDischargeTest.SampleResult.ABORTED -> Toast.makeText(this, "Full discharge test stopped", Toast.LENGTH_LONG).show()
+            else -> Unit
+        }
         persistEnergyTracking()
     }
 
@@ -710,8 +745,9 @@ class BatteryCurrentService : Service() {
         }
 
         val text = parts.takeIf { it.isNotEmpty() }?.joinToString(" ") ?: formatCurrentText()
+        val prefixedText = if (FullDischargeTest.isModeEnabled(this)) "FD: $text" else text
         val dotColor = foregroundCapacityStatusDotColor(now)
-        val displayText = if (dotColor == null) text else "$text \u2022"
+        val displayText = if (dotColor == null) prefixedText else "$prefixedText \u2022"
         return styleLiveDisplayText(displayText, useLightOverlayPalette = isLightOverlayEnabled()).apply {
             if (dotColor != null) {
                 setSpan(
@@ -726,6 +762,10 @@ class BatteryCurrentService : Service() {
 
     private fun foregroundCapacityStatusDotColor(now: Long): Int? {
         return when {
+            FullDischargeTest.isActive(this) -> {
+                val showDot = ((now - graphOverlayCreatedAtMs.coerceAtLeast(sessionStartMs)) / CALIBRATION_DOT_BLINK_MS) % 2L == 0L
+                if (showDot) graphDischargeTextColor else Color.TRANSPARENT
+            }
             capacityDisplayState.isEventActive -> {
                 val showDot = ((now - graphOverlayCreatedAtMs.coerceAtLeast(sessionStartMs)) / CALIBRATION_DOT_BLINK_MS) % 2L == 0L
                 if (showDot) graphCoolTextColor else Color.TRANSPARENT
@@ -1238,6 +1278,11 @@ class BatteryCurrentService : Service() {
     private fun updateCapacityEventIndicator(titleRow: LinearLayout?, now: Long) {
         val dotView = titleRow?.getChildAt(0) as? TextView ?: return
         when {
+            FullDischargeTest.isActive(this) -> {
+                val showDot = ((now - graphOverlayCreatedAtMs) / CALIBRATION_DOT_BLINK_MS) % 2L == 0L
+                dotView.visibility = if (showDot) View.VISIBLE else View.INVISIBLE
+                dotView.setTextColor(graphDischargeTextColor)
+            }
             capacityDisplayState.isEventActive -> {
                 val showDot = ((now - graphOverlayCreatedAtMs) / CALIBRATION_DOT_BLINK_MS) % 2L == 0L
                 dotView.visibility = if (showDot) View.VISIBLE else View.INVISIBLE
@@ -2079,9 +2124,16 @@ class BatteryCurrentService : Service() {
     }
 
     private fun stopMonitoring() {
+        stopFullDischargeTestIfNeeded()
         setMonitoringRunning(false)
         persistEnergyTracking()
         stopSelf()
+    }
+
+    private fun stopFullDischargeTestIfNeeded() {
+        if (!FullDischargeTest.isModeEnabled(this) && !FullDischargeTest.isActive(this)) return
+        FullDischargeTest.abortActive(this)
+        Toast.makeText(this, "Full discharge test stopped", Toast.LENGTH_LONG).show()
     }
 
     private fun resetMeasurementAndGraph() {
@@ -2095,7 +2147,8 @@ class BatteryCurrentService : Service() {
         graphDisplayZeroTimestampMs = 0L
         graphDisplayZeroEnergyMilliWattHours = 0.0
         graphDisplayZeroChargeMilliAmpHours = 0.0
-        lastPluggedState = isPluggedIn(readBatteryStatus())
+        val resetBatteryStatus = readBatteryStatus()
+        lastPluggedState = isPluggedIn(resetBatteryStatus)
 
         energyHistory.clear()
         energyHistory.add(EnergyPoint(
@@ -2119,6 +2172,18 @@ class BatteryCurrentService : Service() {
         graphOverlayView
             ?.let { ((it as? LinearLayout)?.getChildAt(2) as? LinearLayout)?.getChildAt(0) as? EnergyGraphView }
             ?.resetViewport()
+
+        when (FullDischargeTest.tryStartFromReset(
+            context = this,
+            batteryPercent = latestBatteryPercent,
+            pluggedIn = lastPluggedState,
+            nowMs = now
+        )) {
+            FullDischargeTest.StartResult.PENDING -> Toast.makeText(this, "Full discharge test starting in 10 seconds", Toast.LENGTH_LONG).show()
+            FullDischargeTest.StartResult.CHARGER_CONNECTED -> Toast.makeText(this, "Disconnect charger to start FD test", Toast.LENGTH_LONG).show()
+            FullDischargeTest.StartResult.NOT_READY -> Toast.makeText(this, "FD test needs 100% battery", Toast.LENGTH_LONG).show()
+            FullDischargeTest.StartResult.MODE_DISABLED -> Unit
+        }
 
         refreshFloatingOverlayText()
     }
@@ -2206,6 +2271,7 @@ class BatteryCurrentService : Service() {
     }
 
     override fun onDestroy() {
+        stopFullDischargeTestIfNeeded()
         isServiceAlive = false
         handler.removeCallbacks(updateRunnable)
         isUpdateScheduled = false
@@ -2295,7 +2361,7 @@ class BatteryCurrentService : Service() {
                 Triple(point, x, y)
             }
 
-            drawBestFitLine(canvas, yLimit)
+            drawBucketAverageLine(canvas, yLimit)
 
             plotted.forEach { (point, x, y) ->
                 pointPaint.color = if (point.sampleCount >= 3) {
@@ -2306,35 +2372,35 @@ class BatteryCurrentService : Service() {
                 canvas.drawCircle(x, y, 5f, pointPaint)
             }
 
-            canvas.drawText("dots = samples, line = best fit", bounds.right - 360f, 28f, labelPaint)
+            canvas.drawText("dots = samples, line = bucket avg", bounds.right - 380f, 28f, labelPaint)
             drawAxisLabels(canvas)
         }
 
-        private fun drawBestFitLine(canvas: Canvas, yLimit: Double) {
-            if (points.size < 2) return
+        private fun drawBucketAverageLine(canvas: Canvas, yLimit: Double) {
+            val averagedPoints = points
+                .groupBy { it.midpointPct }
+                .map { (midpointPct, bucketPoints) ->
+                    val totalWeight = bucketPoints.sumOf { it.sampleCount.coerceAtLeast(1) }
+                    val weightedDeviation = bucketPoints.sumOf { point ->
+                        point.deviationFromIdeal * point.sampleCount.coerceAtLeast(1)
+                    } / totalWeight
+                    midpointPct to weightedDeviation
+                }
+                .sortedBy { it.first }
 
-            val xMean = points.map { it.midpointPct.toDouble() }.average()
-            val yMean = points.map { it.deviationFromIdeal }.average()
-            var numerator = 0.0
-            var denominator = 0.0
-            points.forEach { point ->
-                val dx = point.midpointPct - xMean
-                numerator += dx * (point.deviationFromIdeal - yMean)
-                denominator += dx * dx
+            if (averagedPoints.size < 2) return
+
+            for (index in 1 until averagedPoints.size) {
+                val previous = averagedPoints[index - 1]
+                val current = averagedPoints[index]
+                canvas.drawLine(
+                    xForPct(previous.first),
+                    yForDeviation(previous.second, yLimit),
+                    xForPct(current.first),
+                    yForDeviation(current.second, yLimit),
+                    curvePaint
+                )
             }
-            if (denominator <= 0.0) return
-
-            val slope = numerator / denominator
-            val intercept = yMean - slope * xMean
-            val minPct = points.minOf { it.midpointPct }.toDouble()
-            val maxPct = points.maxOf { it.midpointPct }.toDouble()
-            canvas.drawLine(
-                xForPct(minPct),
-                yForDeviation(intercept + slope * minPct, yLimit),
-                xForPct(maxPct),
-                yForDeviation(intercept + slope * maxPct, yLimit),
-                curvePaint
-            )
         }
 
         private fun drawAxisLabels(canvas: Canvas) {

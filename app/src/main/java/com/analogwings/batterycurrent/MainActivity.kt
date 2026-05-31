@@ -55,18 +55,21 @@ import com.analogwings.batterycurrent.ui.theme.BatteryCurrentTheme
 class MainActivity : ComponentActivity() {
 
     private var waitingForOverlayPermission = false
+    private var pendingStartAction = BatteryCurrentService.ACTION_SHOW_OVERLAY
     private val monitoringRunningState = mutableStateOf(false)
+    private val fullDischargeModeState = mutableStateOf(false)
 
     private val notificationPermissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
             if (granted || Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
-                requestOverlayThenStart()
+                requestOverlayThenStart(action = pendingStartAction)
             }
         }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         monitoringRunningState.value = isMonitoringRunning()
+        fullDischargeModeState.value = FullDischargeTest.isModeEnabled(this)
 
         setContent {
             BatteryCurrentTheme {
@@ -78,12 +81,13 @@ class MainActivity : ComponentActivity() {
                         initialLightOverlayEnabled = OverlayThemePreference.isLightBackgroundEnabled(this),
                         initialOriginalCapacityMah = BatteryCapacityReference.originalCapacityMah(this),
                         initialShowCapacityPrompt = !BatteryCapacityReference.hasSeenPrompt(this),
+                        fullDischargeModeEnabled = fullDischargeModeState.value,
                         monitoringRunning = monitoringRunningState.value,
                         onMonitorClick = {
                             if (monitoringRunningState.value) {
                                 stopBatteryService()
                             } else {
-                                requestPermissionThenStart()
+                                requestPermissionThenStart(action = BatteryCurrentService.ACTION_SHOW_OVERLAY)
                             }
                         },
                         onLightOverlayChanged = { enabled ->
@@ -96,6 +100,15 @@ class MainActivity : ComponentActivity() {
                         onOriginalCapacitySkipped = {
                             BatteryCapacityReference.markPromptSeen(this)
                         },
+                        onFullDischargeStart = {
+                            FullDischargeTest.setModeEnabled(this, true)
+                            fullDischargeModeState.value = true
+                            requestPermissionThenStart(action = BatteryCurrentService.ACTION_START_FULL_DISCHARGE_TEST)
+                        },
+                        onFullDischargeModeOff = {
+                            FullDischargeTest.setModeEnabled(this, false)
+                            fullDischargeModeState.value = false
+                        },
                         onClose = { finish() }
                     )
                 }
@@ -106,13 +119,15 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         monitoringRunningState.value = isMonitoringRunning()
+        fullDischargeModeState.value = FullDischargeTest.isModeEnabled(this)
         if (waitingForOverlayPermission && overlayPermissionGranted()) {
             waitingForOverlayPermission = false
-            startBatteryServiceAndHideActivity()
+            startBatteryServiceAndHideActivity(action = pendingStartAction)
         }
     }
 
-    private fun requestPermissionThenStart() {
+    private fun requestPermissionThenStart(action: String) {
+        pendingStartAction = action
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
             checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
         ) {
@@ -120,10 +135,11 @@ class MainActivity : ComponentActivity() {
             return
         }
 
-        requestOverlayThenStart()
+        requestOverlayThenStart(action = action)
     }
 
-    private fun requestOverlayThenStart() {
+    private fun requestOverlayThenStart(action: String) {
+        pendingStartAction = action
         if (!overlayPermissionGranted()) {
             waitingForOverlayPermission = true
             val intent = Intent(
@@ -134,16 +150,16 @@ class MainActivity : ComponentActivity() {
             return
         }
 
-        startBatteryServiceAndHideActivity()
+        startBatteryServiceAndHideActivity(action = action)
     }
 
     private fun overlayPermissionGranted(): Boolean {
         return Build.VERSION.SDK_INT < Build.VERSION_CODES.M || Settings.canDrawOverlays(this)
     }
 
-    private fun startBatteryService() {
+    private fun startBatteryService(action: String = BatteryCurrentService.ACTION_SHOW_OVERLAY) {
         val intent = Intent(this, BatteryCurrentService::class.java).apply {
-            action = BatteryCurrentService.ACTION_SHOW_OVERLAY
+            this.action = action
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             startForegroundService(intent)
@@ -152,9 +168,10 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun startBatteryServiceAndHideActivity() {
-        startBatteryService()
+    private fun startBatteryServiceAndHideActivity(action: String = BatteryCurrentService.ACTION_SHOW_OVERLAY) {
+        startBatteryService(action = action)
         monitoringRunningState.value = true
+        pendingStartAction = BatteryCurrentService.ACTION_SHOW_OVERLAY
 
         // Do not leave the full-screen activity in front; the floating readout is the control surface.
         moveTaskToBack(true)
@@ -210,17 +227,21 @@ private fun BatteryCurrentScreen(
     initialLightOverlayEnabled: Boolean,
     initialOriginalCapacityMah: Int?,
     initialShowCapacityPrompt: Boolean,
+    fullDischargeModeEnabled: Boolean,
     monitoringRunning: Boolean,
     onMonitorClick: () -> Unit,
     onLightOverlayChanged: (Boolean) -> Unit,
     onResetOverlayPosition: () -> Unit,
     onOriginalCapacityChanged: (Int?) -> Unit,
     onOriginalCapacitySkipped: () -> Unit,
+    onFullDischargeStart: () -> Unit,
+    onFullDischargeModeOff: () -> Unit,
     onClose: () -> Unit
 ) {
     var lightOverlayEnabled by remember { mutableStateOf(initialLightOverlayEnabled) }
     var originalCapacityMah by remember { mutableStateOf(initialOriginalCapacityMah) }
     var showCapacityDialog by remember { mutableStateOf(initialShowCapacityPrompt) }
+    var showFullDischargeDialog by remember { mutableStateOf(false) }
 
     if (showCapacityDialog) {
         OriginalCapacityDialog(
@@ -233,6 +254,21 @@ private fun BatteryCurrentScreen(
             onSkip = {
                 onOriginalCapacitySkipped()
                 showCapacityDialog = false
+            }
+        )
+    }
+
+    if (showFullDischargeDialog) {
+        FullDischargeTestDialog(
+            modeEnabled = fullDischargeModeEnabled,
+            onDismiss = { showFullDischargeDialog = false },
+            onResetAndStart = {
+                onFullDischargeStart()
+                showFullDischargeDialog = false
+            },
+            onTurnOff = {
+                onFullDischargeModeOff()
+                showFullDischargeDialog = false
             }
         )
     }
@@ -279,6 +315,16 @@ private fun BatteryCurrentScreen(
             StartupActionButton(
                 text = "■",
                 onClick = onResetOverlayPosition
+            )
+        }
+
+        Spacer(modifier = Modifier.height(12.dp))
+
+        SettingRow(label = "Full discharge test") {
+            StartupActionButton(
+                text = if (fullDischargeModeEnabled) "ON" else "Start",
+                onClick = { showFullDischargeDialog = true },
+                indicatorColor = if (fullDischargeModeEnabled) Color(0xFF1FA64A) else Color(0xFFD93636)
             )
         }
 
@@ -341,6 +387,47 @@ private fun StartupCloseButton(
             color = Color.Black
         )
     }
+}
+
+@Composable
+private fun FullDischargeTestDialog(
+    modeEnabled: Boolean,
+    onDismiss: () -> Unit,
+    onResetAndStart: () -> Unit,
+    onTurnOff: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Full discharge test") },
+        text = {
+            Column {
+                Text(
+                    text = "Charge the phone until the battery percentage reads 100% and the current drops to 0mA.",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    text = "DISCONNECT the charger FIRST, THEN press Reset below to clear the graph and mAh reading. The startup screen will close and the graph will open with the test started. Leave monitoring running while the phone discharges.",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    text = "If the phone powers off, the app is stopped, or a charger is connected, the incomplete test is discarded.",
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
+        },
+        confirmButton = {
+            Button(onClick = if (modeEnabled) onTurnOff else onResetAndStart) {
+                Text(if (modeEnabled) "Turn Off" else "Reset")
+            }
+        },
+        dismissButton = {
+            Button(onClick = onDismiss) {
+                Text("Cancel")
+            }
+        }
+    )
 }
 
 @Composable
