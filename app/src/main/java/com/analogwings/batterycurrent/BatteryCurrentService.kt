@@ -1332,7 +1332,7 @@ class BatteryCurrentService : Service() {
     private fun buildCapacityEstimateText(estimateMah: Int): SpannableString {
         val capacityLabel = "Estimated battery capacity: "
         val capacityValue = String.format(Locale.US, "%dmAh", estimateMah)
-        val peukertLabel = "\nPeukert's constant: "
+        val peukertLabel = "\nLoad Sensitivity: "
         val peukertValue = latestPeukertConstantText() ?: "not enough data"
         val fullText = capacityLabel + capacityValue + peukertLabel + peukertValue
         val peukertLabelStart = capacityLabel.length + capacityValue.length
