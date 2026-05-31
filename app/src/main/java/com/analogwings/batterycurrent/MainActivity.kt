@@ -182,6 +182,7 @@ class MainActivity : ComponentActivity() {
 
     private fun resetForegroundOverlayPosition() {
         OverlayPositionPreference.resetPosition(this)
+        if (!isMonitoringRunning()) return
 
         val intent = Intent(this, BatteryCurrentService::class.java).apply {
             action = BatteryCurrentService.ACTION_RESET_OVERLAY_POSITION

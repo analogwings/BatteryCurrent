@@ -125,7 +125,7 @@ class BatteryCapacityEstimator(private val context: Context) {
         val direction = if (averageMilliAmps > 0.0) CHARGING else DISCHARGING
         val previousPercent = prefs.getInt(LAST_BATTERY_PERCENT_KEY, UNKNOWN_PERCENT)
             .takeIf { it != UNKNOWN_PERCENT }
-        updateSocBucketTable(batteryPercent, previousPercent, totalChargeMah, averageMilliAmps, temperatureC, voltageMv)
+        updateSocBucketTable(batteryPercent, previousPercent, totalChargeMah, direction, averageMilliAmps, temperatureC, voltageMv)
         processEventSample(batteryPercent, previousPercent, totalChargeMah, direction, averageMilliAmps, temperatureC, voltageMv)
         prefs.edit().putInt(LAST_BATTERY_PERCENT_KEY, batteryPercent).apply()
         return displayState()
@@ -133,7 +133,12 @@ class BatteryCapacityEstimator(private val context: Context) {
 
     fun resetSegment(totalChargeMah: Double) {
         clearActiveEvent()
-        prefs.edit().putBoolean(EVENT_PAUSED_AFTER_RESET_KEY, true).apply()
+        prefs.edit()
+            .putBoolean(EVENT_PAUSED_AFTER_RESET_KEY, true)
+            .remove(LAST_SOC_BUCKET_PERCENT_KEY)
+            .remove(LAST_SOC_BUCKET_CHARGE_MAH_KEY)
+            .remove(LAST_SOC_BUCKET_DIRECTION_KEY)
+            .apply()
     }
 
     fun clearWarning() {
@@ -244,9 +249,11 @@ class BatteryCapacityEstimator(private val context: Context) {
             .sortedBy { it.bucketStartPct }
         if (learnedBuckets.isEmpty()) return emptyList()
 
-        val idealMah = learnedBuckets.mapNotNull { it.learnedMah }.average()
-            .takeIf { it > 0.0 }
-            ?: return emptyList()
+        val totalSamples = learnedBuckets.sumOf { it.sampleCount }
+        if (totalSamples <= 0) return emptyList()
+
+        val idealMah = learnedBuckets.sumOf { (it.learnedMah ?: 0.0) * it.sampleCount } / totalSamples
+        if (idealMah <= 0.0) return emptyList()
 
         return learnedBuckets.mapNotNull { bucket ->
             val learnedMah = bucket.learnedMah ?: return@mapNotNull null
@@ -483,12 +490,24 @@ class BatteryCapacityEstimator(private val context: Context) {
         batteryPercent: Int,
         previousPercent: Int?,
         totalChargeMah: Double,
+        direction: Int,
         averageMilliAmps: Double,
         temperatureC: Double?,
         voltageMv: Int?
     ) {
+        if (direction != DISCHARGING) {
+            clearLastSocBucketPoint()
+            return
+        }
+
         val previous = previousPercent ?: run {
-            storeLastSocBucketPoint(batteryPercent, totalChargeMah)
+            storeLastSocBucketPoint(batteryPercent, totalChargeMah, direction)
+            return
+        }
+
+        val previousDirection = prefs.getInt(LAST_SOC_BUCKET_DIRECTION_KEY, 0)
+        if (previousDirection != direction) {
+            storeLastSocBucketPoint(batteryPercent, totalChargeMah, direction)
             return
         }
 
@@ -496,12 +515,16 @@ class BatteryCapacityEstimator(private val context: Context) {
             .takeUnless { it.isNaN() }
             ?.toDouble()
         if (previousChargeMah == null) {
-            storeLastSocBucketPoint(batteryPercent, totalChargeMah)
+            storeLastSocBucketPoint(batteryPercent, totalChargeMah, direction)
             return
         }
 
         val clampedPrevious = previous.coerceIn(0, 100)
         val clampedCurrent = batteryPercent.coerceIn(0, 100)
+        if (clampedCurrent == clampedPrevious) {
+            return
+        }
+
         val percentDelta = abs(clampedCurrent - clampedPrevious)
         val chargeDeltaMah = abs(totalChargeMah - previousChargeMah)
 
@@ -539,13 +562,22 @@ class BatteryCapacityEstimator(private val context: Context) {
             writeSocBuckets(buckets.values.sortedBy { it.bucketStartPct })
         }
 
-        storeLastSocBucketPoint(batteryPercent, totalChargeMah)
+        storeLastSocBucketPoint(batteryPercent, totalChargeMah, direction)
     }
 
-    private fun storeLastSocBucketPoint(batteryPercent: Int, totalChargeMah: Double) {
+    private fun storeLastSocBucketPoint(batteryPercent: Int, totalChargeMah: Double, direction: Int) {
         prefs.edit()
             .putInt(LAST_SOC_BUCKET_PERCENT_KEY, batteryPercent.coerceIn(0, 100))
             .putFloat(LAST_SOC_BUCKET_CHARGE_MAH_KEY, totalChargeMah.toFloat())
+            .putInt(LAST_SOC_BUCKET_DIRECTION_KEY, direction)
+            .apply()
+    }
+
+    private fun clearLastSocBucketPoint() {
+        prefs.edit()
+            .remove(LAST_SOC_BUCKET_PERCENT_KEY)
+            .remove(LAST_SOC_BUCKET_CHARGE_MAH_KEY)
+            .remove(LAST_SOC_BUCKET_DIRECTION_KEY)
             .apply()
     }
 
@@ -923,7 +955,7 @@ class BatteryCapacityEstimator(private val context: Context) {
         private const val EVENT_PERCENT_SPAN = 50.0
         private const val MAX_STORED_DAYS = 400
         private const val WARNING_DROP_FRACTION = 0.01
-        private const val MOVING_AVERAGE_READING_COUNT = 100
+        private const val MOVING_AVERAGE_READING_COUNT = 50
         private const val ACTIVE_EVENT_DIRECTION_KEY = "active_event_direction"
         private const val ACTIVE_EVENT_START_TIMESTAMP_KEY = "active_event_start_timestamp_ms"
         private const val ACTIVE_EVENT_START_CHARGE_KEY = "active_event_start_charge_mah"
@@ -945,6 +977,7 @@ class BatteryCapacityEstimator(private val context: Context) {
         private const val LATEST_PEUKERT_K_KEY = "latest_peukert_k"
         private const val LAST_SOC_BUCKET_PERCENT_KEY = "last_soc_bucket_percent"
         private const val LAST_SOC_BUCKET_CHARGE_MAH_KEY = "last_soc_bucket_charge_mah"
+        private const val LAST_SOC_BUCKET_DIRECTION_KEY = "last_soc_bucket_direction"
         private const val SOC_BUCKET_PERCENT_SPAN = 10
         private const val PEUKERT_REFERENCE_CURRENT_MA = 1000.0
         private const val MINIMUM_PEUKERT_CURRENT_MA = 50.0

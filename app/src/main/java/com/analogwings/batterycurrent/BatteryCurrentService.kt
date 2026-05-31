@@ -2072,6 +2072,7 @@ class BatteryCurrentService : Service() {
         lastSampleTimestampMs = now
         totalNetEnergyMilliWattHours = 0.0
         totalNetChargeMilliAmpHours = 0.0
+        capacityEstimator.resetSegment(totalNetChargeMilliAmpHours)
         graphDisplayZeroTimestampMs = 0L
         graphDisplayZeroEnergyMilliWattHours = 0.0
         graphDisplayZeroChargeMilliAmpHours = 0.0
@@ -2362,10 +2363,10 @@ class BatteryCurrentService : Service() {
         }
 
         private fun niceDeviationLimit(value: Double): Double {
-            // Start with +/-5%. If a device produces larger deviation values, autoscale
-            // upward in exact 1% increments so points do not clip and tick spacing stays linear.
-            val scaled = ceil(value.coerceAtLeast(0.05) * 100.0) / 100.0
-            return scaled.coerceAtLeast(0.05)
+            val requiredPct = value.coerceAtLeast(0.05) * 100.0
+            val cleanLimitsPct = doubleArrayOf(5.0, 10.0, 20.0, 50.0, 100.0)
+            val selectedPct = cleanLimitsPct.firstOrNull { requiredPct <= it } ?: 100.0
+            return selectedPct / 100.0
         }
     }
 
