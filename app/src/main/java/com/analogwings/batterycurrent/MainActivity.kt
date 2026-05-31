@@ -99,7 +99,8 @@ class MainActivity : ComponentActivity() {
                         },
                         onOriginalCapacitySkipped = {
                             BatteryCapacityReference.markPromptSeen(this)
-                        }
+                        },
+                        onClose = { finish() }
                     )
                 }
             }
@@ -207,7 +208,8 @@ private fun BatteryCurrentScreen(
     onLightOverlayChanged: (Boolean) -> Unit,
     onResetOverlayPosition: () -> Unit,
     onOriginalCapacityChanged: (Int?) -> Unit,
-    onOriginalCapacitySkipped: () -> Unit
+    onOriginalCapacitySkipped: () -> Unit,
+    onClose: () -> Unit
 ) {
     var temporaryProEnabled by remember { mutableStateOf(initialTemporaryProEnabled) }
     var lightOverlayEnabled by remember { mutableStateOf(initialLightOverlayEnabled) }
@@ -236,11 +238,20 @@ private fun BatteryCurrentScreen(
         verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        Text(
-            text = "Battery Current",
-            style = MaterialTheme.typography.headlineMedium,
-            fontWeight = FontWeight.Bold
-        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Spacer(modifier = Modifier.width(44.dp))
+            Text(
+                modifier = Modifier.weight(1f),
+                text = "Battery Current",
+                style = MaterialTheme.typography.headlineMedium,
+                fontWeight = FontWeight.Bold,
+                textAlign = TextAlign.Center
+            )
+            StartupCloseButton(onClick = onClose)
+        }
 
         Spacer(modifier = Modifier.height(12.dp))
 
@@ -280,7 +291,7 @@ private fun BatteryCurrentScreen(
 
         Spacer(modifier = Modifier.height(12.dp))
 
-        SettingRow(label = "Light foreground background") {
+        SettingRow(label = "Light-theme foreground display") {
             Switch(
                 checked = lightOverlayEnabled,
                 colors = silverSwitchColors(),
@@ -304,13 +315,38 @@ private fun BatteryCurrentScreen(
 
         Spacer(modifier = Modifier.height(18.dp))
 
-        SettingRow(label = "Monitor") {
-            StartupActionButton(
-                text = if (monitoringRunning) "ON" else "OFF",
-                onClick = onMonitorClick,
-                indicatorColor = if (monitoringRunning) Color(0xFF1FA64A) else Color(0xFFD93636)
-            )
-        }
+            SettingRow(label = "Monitor") {
+                StartupActionButton(
+                    text = if (monitoringRunning) "ON" else "OFF",
+                    onClick = onMonitorClick,
+                    indicatorColor = if (monitoringRunning) Color(0xFF1FA64A) else Color(0xFFD93636)
+                )
+            }
+    }
+}
+
+@Composable
+private fun StartupCloseButton(
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit
+) {
+    val shape = RoundedCornerShape(8.dp)
+    Box(
+        modifier = modifier
+            .width(44.dp)
+            .height(40.dp)
+            .clip(shape)
+            .background(Color.White)
+            .border(2.dp, Color.Black, shape)
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            text = "X",
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.Bold,
+            color = Color.Black
+        )
     }
 }
 
@@ -363,7 +399,7 @@ private fun StartupActionButton(
 
     Box(
         modifier = Modifier
-            .width(74.dp)
+            .width(64.dp)
             .height(44.dp)
             .shadow(8.dp, shape, clip = false)
             .clip(shape)
