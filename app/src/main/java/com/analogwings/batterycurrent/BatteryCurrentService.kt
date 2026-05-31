@@ -57,6 +57,8 @@ class BatteryCurrentService : Service() {
         const val ACTION_RESET_OVERLAY_POSITION = "com.analogwings.batterycurrent.RESET_OVERLAY_POSITION"
         const val MONITOR_STATE_PREFS_NAME = "battery_current_monitor_state"
         const val MONITOR_RUNNING_KEY = "monitor_running"
+        const val MONITOR_LAST_HEARTBEAT_MS_KEY = "monitor_last_heartbeat_ms"
+        const val MONITOR_HEARTBEAT_STALE_MS = 45_000L
         private const val ENERGY_UNIT_MWH = "mWh"
         private const val ENERGY_UNIT_MAH = "mAh"
         private const val TEMPERATURE_UNIT_C = "C"
@@ -178,9 +180,21 @@ class BatteryCurrentService : Service() {
     }
 
     private fun setMonitoringRunning(running: Boolean) {
+        val editor = getSharedPreferences(MONITOR_STATE_PREFS_NAME, Context.MODE_PRIVATE).edit()
+            .putBoolean(MONITOR_RUNNING_KEY, running)
+        if (running) {
+            editor.putLong(MONITOR_LAST_HEARTBEAT_MS_KEY, System.currentTimeMillis())
+        } else {
+            editor.remove(MONITOR_LAST_HEARTBEAT_MS_KEY)
+        }
+        editor.apply()
+    }
+
+    private fun updateMonitorHeartbeat() {
         getSharedPreferences(MONITOR_STATE_PREFS_NAME, Context.MODE_PRIVATE)
             .edit()
-            .putBoolean(MONITOR_RUNNING_KEY, running)
+            .putBoolean(MONITOR_RUNNING_KEY, true)
+            .putLong(MONITOR_LAST_HEARTBEAT_MS_KEY, System.currentTimeMillis())
             .apply()
     }
 
@@ -236,6 +250,7 @@ class BatteryCurrentService : Service() {
 
     private fun updateCurrentDisplay() {
         isUpdateScheduled = false
+        updateMonitorHeartbeat()
 
         val display = try {
             val batteryStatus = readBatteryStatus()

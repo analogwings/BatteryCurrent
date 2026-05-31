@@ -177,8 +177,20 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun isMonitoringRunning(): Boolean {
-        return getSharedPreferences(BatteryCurrentService.MONITOR_STATE_PREFS_NAME, MODE_PRIVATE)
-            .getBoolean(BatteryCurrentService.MONITOR_RUNNING_KEY, false)
+        val prefs = getSharedPreferences(BatteryCurrentService.MONITOR_STATE_PREFS_NAME, MODE_PRIVATE)
+        if (!prefs.getBoolean(BatteryCurrentService.MONITOR_RUNNING_KEY, false)) return false
+
+        val lastHeartbeatMs = prefs.getLong(BatteryCurrentService.MONITOR_LAST_HEARTBEAT_MS_KEY, 0L)
+        val heartbeatAgeMs = System.currentTimeMillis() - lastHeartbeatMs
+        val serviceLooksAlive = lastHeartbeatMs > 0L &&
+            heartbeatAgeMs <= BatteryCurrentService.MONITOR_HEARTBEAT_STALE_MS
+        if (!serviceLooksAlive) {
+            prefs.edit()
+                .putBoolean(BatteryCurrentService.MONITOR_RUNNING_KEY, false)
+                .remove(BatteryCurrentService.MONITOR_LAST_HEARTBEAT_MS_KEY)
+                .apply()
+        }
+        return serviceLooksAlive
     }
 
     private fun resetForegroundOverlayPosition() {
