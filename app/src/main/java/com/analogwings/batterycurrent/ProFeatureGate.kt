@@ -7,7 +7,8 @@ object ProFeatureGate {
     private const val TEMPORARY_PRO_KEY = "temporary_pro_enabled"
 
     fun isProEnabled(context: Context): Boolean {
-        return BuildConfig.IS_PRO_VERSION || isTemporaryProEnabled(context)
+        // Keep Pro-gated features active until purchase/testing wiring is added.
+        return true
     }
 
     fun isTemporaryProEnabled(context: Context): Boolean {
@@ -23,7 +24,7 @@ object ProFeatureGate {
     }
 
     fun appTitle(context: Context): String {
-        return if (isProEnabled(context)) "BatteryCurrent Pro" else "BatteryCurrent"
+        return if (isProEnabled(context)) "Battery*Current" else "BatteryCurrent"
     }
 
     fun displayVersion(context: Context): String {

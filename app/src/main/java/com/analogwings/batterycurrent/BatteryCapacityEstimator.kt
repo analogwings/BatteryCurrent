@@ -58,6 +58,15 @@ class BatteryCapacityEstimator(private val context: Context) {
         val sampleCount: Int
     )
 
+    private data class SocBucketSample(
+        val timestampMs: Long,
+        val bucketStartPct: Int,
+        val bucketEndPct: Int,
+        val learnedMah: Double,
+        val currentMa: Double,
+        val temperatureC: Double?
+    )
+
     private data class ActiveEvent(
         val direction: Int,
         val startTimestampMs: Long,
@@ -100,15 +109,11 @@ class BatteryCapacityEstimator(private val context: Context) {
     private val socBucketsFile: File
         get() = File(context.filesDir, "battery_soc_buckets.csv")
 
-    private val legacyCalibrationFile: File
-        get() = File(context.filesDir, "battery_capacity_calibration.csv")
+    private val socBucketSamplesFile: File
+        get() = File(context.filesDir, "battery_soc_bucket_samples.csv")
 
     private val prefs by lazy {
         context.getSharedPreferences("battery_capacity_estimator", Context.MODE_PRIVATE)
-    }
-
-    init {
-        legacyCalibrationFile.delete()
     }
 
     fun processSample(
@@ -244,6 +249,25 @@ class BatteryCapacityEstimator(private val context: Context) {
     }
 
     fun socLinearityPoints(): List<SocLinearityPoint> {
+        readSocBucketSamples()
+            .takeIf { it.isNotEmpty() }
+            ?.let { samples ->
+                val idealMah = samples.map { it.learnedMah }.average()
+                if (idealMah <= 0.0) return emptyList()
+
+                return samples.map { sample ->
+                    SocLinearityPoint(
+                        bucketStartPct = sample.bucketStartPct,
+                        bucketEndPct = sample.bucketEndPct,
+                        midpointPct = (sample.bucketStartPct + sample.bucketEndPct) / 2,
+                        deviationFromIdeal = (sample.learnedMah - idealMah) / idealMah,
+                        learnedMah = sample.learnedMah,
+                        idealMah = idealMah,
+                        sampleCount = 1
+                    )
+                }
+            }
+
         val learnedBuckets = socBucketSummaries()
             .filter { it.sampleCount > 0 && it.learnedMah != null && it.learnedMah > 0.0 }
             .sortedBy { it.bucketStartPct }
@@ -557,6 +581,16 @@ class BatteryCapacityEstimator(private val context: Context) {
                     temperatureSampleCount = existing.temperatureSampleCount + if (temperatureC != null) 1 else 0,
                     temperatureSumC = existing.temperatureSumC + (temperatureC ?: 0.0)
                 )
+                appendSocBucketSample(
+                    SocBucketSample(
+                        timestampMs = System.currentTimeMillis(),
+                        bucketStartPct = bucketStart,
+                        bucketEndPct = bucketStart + SOC_BUCKET_PERCENT_SPAN,
+                        learnedMah = mahPerPercent * SOC_BUCKET_PERCENT_SPAN,
+                        currentMa = abs(averageMilliAmps),
+                        temperatureC = temperatureC
+                    )
+                )
             }
 
             writeSocBuckets(buckets.values.sortedBy { it.bucketStartPct })
@@ -617,6 +651,43 @@ class BatteryCapacityEstimator(private val context: Context) {
             ).joinToString(",")
         }
         socBucketsFile.writeText((listOf(header) + rows).joinToString("\n"))
+    }
+
+    private fun readSocBucketSamples(): List<SocBucketSample> {
+        if (!socBucketSamplesFile.exists()) return emptyList()
+        return socBucketSamplesFile.readLines().mapNotNull { line ->
+            if (line.startsWith("TimestampMs,")) return@mapNotNull null
+            val parts = line.split(",")
+            if (parts.size < 6) return@mapNotNull null
+            SocBucketSample(
+                timestampMs = parts[0].toLongOrNull() ?: return@mapNotNull null,
+                bucketStartPct = parts[1].toIntOrNull() ?: return@mapNotNull null,
+                bucketEndPct = parts[2].toIntOrNull() ?: return@mapNotNull null,
+                learnedMah = parts[3].toDoubleOrNull() ?: return@mapNotNull null,
+                currentMa = parts[4].toDoubleOrNull() ?: 0.0,
+                temperatureC = parts[5].toDoubleOrNull()
+            )
+        }.sortedBy { it.timestampMs }
+    }
+
+    private fun appendSocBucketSample(sample: SocBucketSample) {
+        val header = "TimestampMs,BucketStartPct,BucketEndPct,LearnedMah,Current_mA,Temp_C"
+        val existingRows = if (socBucketSamplesFile.exists()) {
+            socBucketSamplesFile.readLines()
+                .filter { it.isNotBlank() && !it.startsWith("TimestampMs,") }
+        } else {
+            emptyList()
+        }
+        val newRow = listOf(
+            sample.timestampMs.toString(),
+            sample.bucketStartPct.toString(),
+            sample.bucketEndPct.toString(),
+            String.format(Locale.US, "%.3f", sample.learnedMah),
+            String.format(Locale.US, "%.1f", sample.currentMa),
+            sample.temperatureC?.let { String.format(Locale.US, "%.1f", it) } ?: ""
+        ).joinToString(",")
+        val rows = (existingRows + newRow).takeLast(MAX_SOC_BUCKET_SAMPLES)
+        socBucketSamplesFile.writeText((listOf(header) + rows).joinToString("\n"))
     }
 
     private data class PeukertEventReading(
@@ -979,6 +1050,7 @@ class BatteryCapacityEstimator(private val context: Context) {
         private const val LAST_SOC_BUCKET_CHARGE_MAH_KEY = "last_soc_bucket_charge_mah"
         private const val LAST_SOC_BUCKET_DIRECTION_KEY = "last_soc_bucket_direction"
         private const val SOC_BUCKET_PERCENT_SPAN = 10
+        private const val MAX_SOC_BUCKET_SAMPLES = 2000
         private const val PEUKERT_REFERENCE_CURRENT_MA = 1000.0
         private const val MINIMUM_PEUKERT_CURRENT_MA = 50.0
         private const val MINIMUM_PEUKERT_CURRENT_SPREAD_RATIO = 1.33

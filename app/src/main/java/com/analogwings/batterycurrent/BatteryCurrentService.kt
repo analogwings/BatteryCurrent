@@ -59,6 +59,9 @@ class BatteryCurrentService : Service() {
         const val MONITOR_RUNNING_KEY = "monitor_running"
         const val MONITOR_LAST_HEARTBEAT_MS_KEY = "monitor_last_heartbeat_ms"
         const val MONITOR_HEARTBEAT_STALE_MS = 45_000L
+        @Volatile
+        var isServiceAlive = false
+            private set
         private const val ENERGY_UNIT_MWH = "mWh"
         private const val ENERGY_UNIT_MAH = "mAh"
         private const val TEMPERATURE_UNIT_C = "C"
@@ -176,6 +179,7 @@ class BatteryCurrentService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        isServiceAlive = true
         createNotificationChannel()
     }
 
@@ -2202,6 +2206,7 @@ class BatteryCurrentService : Service() {
     }
 
     override fun onDestroy() {
+        isServiceAlive = false
         handler.removeCallbacks(updateRunnable)
         isUpdateScheduled = false
         setMonitoringRunning(false)
@@ -2253,7 +2258,7 @@ class BatteryCurrentService : Service() {
 
         fun setPoints(items: List<BatteryCapacityEstimator.SocLinearityPoint>) {
             points.clear()
-            points.addAll(items.sortedBy { it.midpointPct })
+            points.addAll(items.sortedWith(compareBy<BatteryCapacityEstimator.SocLinearityPoint> { it.midpointPct }.thenBy { it.deviationFromIdeal }))
             invalidate()
         }
 
@@ -2290,34 +2295,46 @@ class BatteryCurrentService : Service() {
                 Triple(point, x, y)
             }
 
-            if (plotted.size >= 2) {
-                // Draw direct straight segments between measured bucket points.
-                // Do not smooth/interpolate this curve; the user wants the raw learned
-                // bucket-to-bucket SOC linearity shape.
-                for (i in 1 until plotted.size) {
-                    val previous = plotted[i - 1]
-                    val current = plotted[i]
-                    canvas.drawLine(
-                        previous.second,
-                        previous.third,
-                        current.second,
-                        current.third,
-                        curvePaint
-                    )
-                }
-            }
+            drawBestFitLine(canvas, yLimit)
 
             plotted.forEach { (point, x, y) ->
                 pointPaint.color = if (point.sampleCount >= 3) {
                     Color.WHITE
                 } else {
-                    Color.argb(150, 255, 255, 255)
+                    Color.argb(185, 255, 255, 255)
                 }
-                canvas.drawCircle(x, y, 6f, pointPaint)
+                canvas.drawCircle(x, y, 5f, pointPaint)
             }
 
-            canvas.drawText("dashed = 0% ideal", bounds.right - 250f, 28f, labelPaint)
+            canvas.drawText("dots = samples, line = best fit", bounds.right - 360f, 28f, labelPaint)
             drawAxisLabels(canvas)
+        }
+
+        private fun drawBestFitLine(canvas: Canvas, yLimit: Double) {
+            if (points.size < 2) return
+
+            val xMean = points.map { it.midpointPct.toDouble() }.average()
+            val yMean = points.map { it.deviationFromIdeal }.average()
+            var numerator = 0.0
+            var denominator = 0.0
+            points.forEach { point ->
+                val dx = point.midpointPct - xMean
+                numerator += dx * (point.deviationFromIdeal - yMean)
+                denominator += dx * dx
+            }
+            if (denominator <= 0.0) return
+
+            val slope = numerator / denominator
+            val intercept = yMean - slope * xMean
+            val minPct = points.minOf { it.midpointPct }.toDouble()
+            val maxPct = points.maxOf { it.midpointPct }.toDouble()
+            canvas.drawLine(
+                xForPct(minPct),
+                yForDeviation(intercept + slope * minPct, yLimit),
+                xForPct(maxPct),
+                yForDeviation(intercept + slope * maxPct, yLimit),
+                curvePaint
+            )
         }
 
         private fun drawAxisLabels(canvas: Canvas) {
@@ -2342,8 +2359,10 @@ class BatteryCurrentService : Service() {
             labelPaint.textAlign = Paint.Align.LEFT
         }
 
-        private fun xForPct(percent: Int): Float {
-            val fraction = (percent.coerceIn(0, 100) / 100.0).toFloat()
+        private fun xForPct(percent: Int): Float = xForPct(percent.toDouble())
+
+        private fun xForPct(percent: Double): Float {
+            val fraction = (percent.coerceIn(0.0, 100.0) / 100.0).toFloat()
             return bounds.left + fraction * bounds.width()
         }
 

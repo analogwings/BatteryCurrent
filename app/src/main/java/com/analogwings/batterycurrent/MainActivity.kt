@@ -75,7 +75,6 @@ class MainActivity : ComponentActivity() {
                     color = MaterialTheme.colorScheme.background
                 ) {
                     BatteryCurrentScreen(
-                        initialTemporaryProEnabled = ProFeatureGate.isTemporaryProEnabled(this),
                         initialLightOverlayEnabled = OverlayThemePreference.isLightBackgroundEnabled(this),
                         initialOriginalCapacityMah = BatteryCapacityReference.originalCapacityMah(this),
                         initialShowCapacityPrompt = !BatteryCapacityReference.hasSeenPrompt(this),
@@ -86,9 +85,6 @@ class MainActivity : ComponentActivity() {
                             } else {
                                 requestPermissionThenStart()
                             }
-                        },
-                        onTemporaryProChanged = { enabled ->
-                            ProFeatureGate.setTemporaryProEnabled(this, enabled)
                         },
                         onLightOverlayChanged = { enabled ->
                             OverlayThemePreference.setLightBackgroundEnabled(this, enabled)
@@ -182,7 +178,8 @@ class MainActivity : ComponentActivity() {
 
         val lastHeartbeatMs = prefs.getLong(BatteryCurrentService.MONITOR_LAST_HEARTBEAT_MS_KEY, 0L)
         val heartbeatAgeMs = System.currentTimeMillis() - lastHeartbeatMs
-        val serviceLooksAlive = lastHeartbeatMs > 0L &&
+        val serviceLooksAlive = BatteryCurrentService.isServiceAlive &&
+            lastHeartbeatMs > 0L &&
             heartbeatAgeMs <= BatteryCurrentService.MONITOR_HEARTBEAT_STALE_MS
         if (!serviceLooksAlive) {
             prefs.edit()
@@ -210,20 +207,17 @@ class MainActivity : ComponentActivity() {
 
 @Composable
 private fun BatteryCurrentScreen(
-    initialTemporaryProEnabled: Boolean,
     initialLightOverlayEnabled: Boolean,
     initialOriginalCapacityMah: Int?,
     initialShowCapacityPrompt: Boolean,
     monitoringRunning: Boolean,
     onMonitorClick: () -> Unit,
-    onTemporaryProChanged: (Boolean) -> Unit,
     onLightOverlayChanged: (Boolean) -> Unit,
     onResetOverlayPosition: () -> Unit,
     onOriginalCapacityChanged: (Int?) -> Unit,
     onOriginalCapacitySkipped: () -> Unit,
     onClose: () -> Unit
 ) {
-    var temporaryProEnabled by remember { mutableStateOf(initialTemporaryProEnabled) }
     var lightOverlayEnabled by remember { mutableStateOf(initialLightOverlayEnabled) }
     var originalCapacityMah by remember { mutableStateOf(initialOriginalCapacityMah) }
     var showCapacityDialog by remember { mutableStateOf(initialShowCapacityPrompt) }
@@ -268,31 +262,18 @@ private fun BatteryCurrentScreen(
         Spacer(modifier = Modifier.height(12.dp))
 
         Text(
-            text = "Battery health data is being collected. Upgrade to Pro to view capacity and degradation insights.",
+            text = "Battery health data is being collected for capacity and degradation insights.",
             style = MaterialTheme.typography.bodyMedium
         )
 
         Spacer(modifier = Modifier.height(8.dp))
 
         Text(
-            text = "For testing, turn on temporary Pro mode before starting monitoring. The floating readout will appear, then tap it to open the graph.",
+            text = "Start monitoring to show the floating readout, then tap it to open the graph.",
             style = MaterialTheme.typography.bodySmall
         )
 
         Spacer(modifier = Modifier.height(24.dp))
-
-        SettingRow(label = "Temporary Pro mode") {
-            Switch(
-                checked = temporaryProEnabled,
-                colors = silverSwitchColors(),
-                onCheckedChange = { enabled ->
-                    temporaryProEnabled = enabled
-                    onTemporaryProChanged(enabled)
-                }
-            )
-        }
-
-        Spacer(modifier = Modifier.height(12.dp))
 
         SettingRow(label = "Reset foreground display to centre") {
             StartupActionButton(
