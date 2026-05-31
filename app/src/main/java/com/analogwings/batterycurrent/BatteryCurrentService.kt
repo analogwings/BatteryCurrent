@@ -1359,13 +1359,10 @@ class BatteryCurrentService : Service() {
         val warningView = warningRow?.getChildAt(0) as? TextView
 
         val estimateMah = capacityDisplayState.estimateMah
-        if (estimateMah != null) {
-            estimateView?.text = buildCapacityEstimateText(estimateMah)
-            estimateView?.visibility = View.VISIBLE
-            estimateView?.isEnabled = true
-        } else {
-            estimateView?.visibility = View.GONE
-            estimateView?.isEnabled = false
+        estimateView?.text = buildCapacityEstimateText(estimateMah)
+        estimateView?.visibility = View.VISIBLE
+        estimateView?.isEnabled = estimateMah != null
+        if (estimateMah == null) {
             removeCapacityHistoryPopup()
         }
 
@@ -1378,26 +1375,66 @@ class BatteryCurrentService : Service() {
         }
     }
 
-    private fun buildCapacityEstimateText(estimateMah: Int): SpannableString {
-        val capacityLabel = "Estimated battery capacity: "
-        val capacityValue = String.format(Locale.US, "%dmAh", estimateMah)
-        val peukertLabel = "\nLoad Sensitivity: "
-        val peukertValue = latestPeukertConstantText() ?: "not enough data"
-        val fullText = capacityLabel + capacityValue + peukertLabel + peukertValue
-        val peukertLabelStart = capacityLabel.length + capacityValue.length
+    private fun buildCapacityEstimateText(estimateMah: Int?): SpannableString {
+        val ratedLabel = "Rated: "
+        val ratedValue = BatteryCapacityReference.originalCapacityMah(this)
+            ?.let { String.format(Locale.US, "%dmAh", it) }
+            ?: "--"
+        val fullDischargeLabel = "  FD: "
+        val fullDischargeValue = FullDischargeTest.latestCapacityEstimateMah(this)
+            ?.let { String.format(Locale.US, "%dmAh", it) }
+            ?: "--"
+        val capacityLabel = "  Est: "
+        val capacityValue = estimateMah?.let { String.format(Locale.US, "%dmAh", it) } ?: "--"
+        val peukertLabel = "\nBatt. capcty load sensitivity: "
+        val peukertValue = latestPeukertConstant()
+            ?.let { value -> String.format(Locale.US, "k=%.3f %s", value, peukertSensitivityMessage(value)) }
+            ?: "not enough data"
+        val firstLine = ratedLabel + ratedValue + fullDischargeLabel + fullDischargeValue + capacityLabel + capacityValue
+        val fullText = firstLine + peukertLabel + peukertValue
+        val ratedValueStart = ratedLabel.length
+        val fullDischargeLabelStart = ratedValueStart + ratedValue.length
+        val fullDischargeValueStart = fullDischargeLabelStart + fullDischargeLabel.length
+        val capacityLabelStart = fullDischargeValueStart + fullDischargeValue.length
+        val capacityValueStart = capacityLabelStart + capacityLabel.length
+        val peukertLabelStart = firstLine.length
         val peukertValueStart = peukertLabelStart + peukertLabel.length
 
         return SpannableString(fullText).apply {
             setSpan(
                 ForegroundColorSpan(graphEstimateLabelColor),
                 0,
-                capacityLabel.length,
+                ratedValueStart,
                 Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
             )
             setSpan(
-                ForegroundColorSpan(capacityEstimateColor(estimateMah)),
-                capacityLabel.length,
-                capacityLabel.length + capacityValue.length,
+                ForegroundColorSpan(graphCoolTextColor),
+                ratedValueStart,
+                fullDischargeLabelStart,
+                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+            )
+            setSpan(
+                ForegroundColorSpan(graphEstimateLabelColor),
+                fullDischargeLabelStart,
+                fullDischargeValueStart,
+                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+            )
+            setSpan(
+                ForegroundColorSpan(graphCoolTextColor),
+                fullDischargeValueStart,
+                capacityLabelStart,
+                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+            )
+            setSpan(
+                ForegroundColorSpan(graphEstimateLabelColor),
+                capacityLabelStart,
+                capacityValueStart,
+                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+            )
+            setSpan(
+                ForegroundColorSpan(estimateMah?.let { capacityEstimateColor(it) } ?: graphCoolTextColor),
+                capacityValueStart,
+                peukertLabelStart,
                 Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
             )
             setSpan(
@@ -1416,6 +1453,10 @@ class BatteryCurrentService : Service() {
     }
 
     private fun latestPeukertConstantText(): String? {
+        return latestPeukertConstant()?.let { value -> String.format(Locale.US, "k=%.3f", value) }
+    }
+
+    private fun latestPeukertConstant(): Double? {
         val eventsFile = java.io.File(filesDir, "battery_capacity_events.csv")
         if (!eventsFile.exists() || eventsFile.length() == 0L) return null
 
@@ -1442,9 +1483,18 @@ class BatteryCurrentService : Service() {
                         ?.toDoubleOrNull()
                 }
                 .firstOrNull()
-                ?.let { value -> String.format(Locale.US, "k=%.3f", value) }
         } catch (_: Exception) {
             null
+        }
+    }
+
+    private fun peukertSensitivityMessage(value: Double): String {
+        return when {
+            value <= 1.05 -> "excellent"
+            value <= 1.15 -> "mild"
+            value <= 1.30 -> "noticeable"
+            value <= 1.50 -> "high sag"
+            else -> "check data"
         }
     }
 

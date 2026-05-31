@@ -51,6 +51,26 @@ object FullDischargeTest {
         return prefs.getBoolean(ACTIVE_KEY, false) || prefs.getBoolean(PENDING_START_KEY, false)
     }
 
+    fun latestCapacityEstimateMah(context: Context): Int? {
+        val file = File(context.filesDir, FILE_NAME)
+        if (!file.exists() || file.length() == 0L) return null
+        return try {
+            val lines = file.readLines().filter { it.isNotBlank() }
+            if (lines.size < 2) return null
+            val headers = lines.first().split(",").map { it.trim() }
+            val capacityIndex = headers.indexOf("CapacityEstimate_mAh")
+            if (capacityIndex < 0) return null
+            lines.asReversed()
+                .dropLast(1)
+                .mapNotNull { line ->
+                    line.split(",").getOrNull(capacityIndex)?.trim()?.toIntOrNull()
+                }
+                .firstOrNull()
+        } catch (_: Exception) {
+            null
+        }
+    }
+
     fun abortIfStale(context: Context, nowMs: Long = System.currentTimeMillis()) {
         val prefs = prefs(context)
         if (!prefs.getBoolean(ACTIVE_KEY, false) && !prefs.getBoolean(PENDING_START_KEY, false)) return
