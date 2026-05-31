@@ -270,7 +270,7 @@ private fun BatteryCurrentScreen(
 
         Spacer(modifier = Modifier.height(12.dp))
 
-        SettingRow(label = "Reset foreground display") {
+        SettingRow(label = "Reset foreground display to centre") {
             StartupActionButton(
                 text = "■",
                 onClick = onResetOverlayPosition
