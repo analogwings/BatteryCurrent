@@ -1863,7 +1863,7 @@ class BatteryCurrentService : Service() {
             })
 
             addView(TextView(this@BatteryCurrentService).apply {
-                text = "Deviation from ideal linear SOC. Extreme outliers are ignored so one bad sample does not dominate the curve."
+                text = "Deviation from ideal linear SOC. Extreme outliers are ignored."
                 textSize = 11f
                 setTextColor(Color.argb(220, 255, 255, 255))
                 setPadding(0, 6, 0, 8)

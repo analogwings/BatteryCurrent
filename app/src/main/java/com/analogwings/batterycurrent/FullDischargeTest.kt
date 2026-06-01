@@ -106,7 +106,7 @@ object FullDischargeTest {
         if (!isModeEnabled(context)) return null
         val prefs = prefs(context)
         return when {
-            prefs.getBoolean(ACTIVE_KEY, false) -> "Calibration measuring: discharge to 10%."
+            prefs.getBoolean(ACTIVE_KEY, false) -> "Calibrating battery capacity: discharge to 10%."
             prefs.getBoolean(PENDING_START_KEY, false) -> pendingStatusText(prefs, nowMs)
             else -> "Calibration enabled."
         }
