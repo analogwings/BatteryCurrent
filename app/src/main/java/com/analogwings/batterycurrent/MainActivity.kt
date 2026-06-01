@@ -402,12 +402,12 @@ private fun FullDischargeTestDialog(
         text = {
             Column {
                 Text(
-                    text = "For calibration, press Start while the phone is charging. The app will wait for 100%, run a 20 minute top-off timer, then prompt you to disconnect the charger.",
+                    text = "For calibration, press Start while the phone is charging. The app will wait for 100%, run a 10 minute top-off timer, then prompt you to disconnect the charger.",
                     style = MaterialTheme.typography.bodyMedium
                 )
                 Spacer(modifier = Modifier.height(8.dp))
                 Text(
-                    text = "After the disconnect prompt, unplug within 20 minutes. The graph opens immediately, but measurement starts automatically when the phone falls to 95% and stops at 10%.",
+                    text = "After the disconnect prompt, unplug within 10 minutes. The graph opens immediately, but measurement starts automatically when the phone falls to 95% and stops at 10%.",
                     style = MaterialTheme.typography.bodyMedium
                 )
                 Spacer(modifier = Modifier.height(8.dp))

@@ -343,9 +343,9 @@ def build_manual():
     )
     add_numbered(doc, [
         "Charge the phone until Android reports 100%.",
-        "Leave the phone connected for 20 minutes after it reaches 100%.",
+        "Leave the phone connected for 10 minutes after it reaches 100%.",
         "Open BatteryCurrent and tap Calibration setup.",
-        "After the 20 minute wait, disconnect the charger, then press Start in the dialog.",
+        "After the 10 minute wait, disconnect the charger, then press Start in the dialog.",
         "The startup page closes and the graph opens while calibration is armed.",
         "The app resets the graph/mAh reading and starts measuring automatically when the phone reaches 95%.",
         "Leave monitoring running until the phone discharges to 10%. The app then records the completed calibration.",
@@ -360,7 +360,7 @@ def build_manual():
     add_placeholder(
         doc,
         "Calibration setup dialog",
-        "Insert a screenshot showing the calibration instructions with the 20 minute wait, disconnect reminder, Start button, and Cancel button.",
+        "Insert a screenshot showing the calibration instructions with the 10 minute wait, disconnect reminder, Start button, and Cancel button.",
     )
 
     doc.add_heading("10. SOC Curve and Load Sensitivity", level=1)
@@ -400,7 +400,7 @@ def build_manual():
         ("Graph looks crowded", "Use the X or Y zoom controls, pinch to zoom the selected axis, or collapse the menu buttons."),
         ("No capacity estimate yet", "The app needs completed qualifying charge or discharge sessions before daily estimates are available."),
         ("No calibration result yet", "Run the guided calibration from 95% down to 10%. Until then, the chart uses the 25%-75% estimate when available."),
-        ("Calibration will not start", "Charge to 100%, wait 20 minutes while still connected, disconnect the charger, then press Start in the calibration dialog. The app begins measuring automatically at 95%."),
+        ("Calibration will not start", "Charge to 100%, wait 10 minutes while still connected, disconnect the charger, then press Start in the calibration dialog. The app begins measuring automatically at 95%."),
         ("Monitor button looks stale", "The startup page checks the live service heartbeat. If Android killed the service, the button returns to Start/OFF when reopened."),
         ("App was stopped", "Restart BatteryCurrent from the launcher. If the service was fully stopped, it cannot measure the period while it was not running."),
     ])

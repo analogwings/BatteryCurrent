@@ -42,8 +42,8 @@ object FullDischargeTest {
     private const val FULL_PERCENT = 100
     private const val CALIBRATION_SPAN_FRACTION = 0.85
     private const val INTERRUPTION_STALE_MS = 45_000L
-    private const val TOP_OFF_WAIT_MS = 20 * 60_000L
-    private const val DISCONNECT_WAIT_MS = 20 * 60_000L
+    private const val TOP_OFF_WAIT_MS = 10 * 60_000L
+    private const val DISCONNECT_WAIT_MS = 10 * 60_000L
 
     fun isModeEnabled(context: Context): Boolean {
         return prefs(context).getBoolean(MODE_ENABLED_KEY, false)

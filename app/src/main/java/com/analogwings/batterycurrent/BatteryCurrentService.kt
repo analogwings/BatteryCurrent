@@ -589,10 +589,10 @@ class BatteryCurrentService : Service() {
             FullDischargeTest.SampleResult.PENDING -> Unit
             FullDischargeTest.SampleResult.TOP_OFF_STARTED -> {
                 playCalibrationNoticeSound()
-                Toast.makeText(this, "Calibration top-off started: wait 20 minutes", Toast.LENGTH_LONG).show()
+                Toast.makeText(this, "Calibration top-off started: wait 10 minutes", Toast.LENGTH_LONG).show()
             }
             FullDischargeTest.SampleResult.READY_TO_DISCONNECT -> {
-                Toast.makeText(this, "Calibration ready: disconnect charger within 20 minutes", Toast.LENGTH_LONG).show()
+                Toast.makeText(this, "Calibration ready: disconnect charger within 10 minutes", Toast.LENGTH_LONG).show()
             }
             FullDischargeTest.SampleResult.WAITING_FOR_DISCONNECT -> Unit
             FullDischargeTest.SampleResult.READY_TO_START -> {
