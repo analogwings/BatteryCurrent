@@ -176,6 +176,23 @@ class BatteryCapacityEstimator(private val context: Context) {
             }
     }
 
+    fun estimateNearTimestamp(timestampMs: Long, windowDays: Int = 3): Int? {
+        val readings = readReadings()
+        if (readings.isEmpty()) return null
+        val windowMs = windowDays.coerceAtLeast(1).toLong() * 24L * 60L * 60L * 1000L
+        val nearby = readings.filter { abs(it.timestampMs - timestampMs) <= windowMs }
+            .takeIf { it.isNotEmpty() }
+            ?: listOf(readings.minBy { abs(it.timestampMs - timestampMs) })
+        val totalCount = nearby.sumOf { it.sampleCount }
+        if (totalCount <= 0) return null
+        val weightedTotal = nearby.sumOf { it.averageCapacityMah.toLong() * it.sampleCount.toLong() }
+        return (weightedTotal.toDouble() / totalCount).roundToInt()
+    }
+
+    fun recentWeightedEstimate(limit: Int = 10): Int? {
+        return recentDailyWeightedEstimate(limit)
+    }
+
     fun eventsForDay(dayTimestampMs: Long): List<CapacityEventSummary> {
         if (!eventsFile.exists()) return emptyList()
         val targetDay = dayStartMs(dayTimestampMs)

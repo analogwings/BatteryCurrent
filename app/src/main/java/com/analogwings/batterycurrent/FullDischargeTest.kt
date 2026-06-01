@@ -9,6 +9,11 @@ import kotlin.math.abs
 import kotlin.math.roundToInt
 
 object FullDischargeTest {
+    data class Result(
+        val startTimestampText: String,
+        val capacityEstimateMah: Int
+    )
+
     private const val PREFS_NAME = "battery_current_full_discharge_test"
     private const val MODE_ENABLED_KEY = "mode_enabled"
     private const val ACTIVE_KEY = "active"
@@ -52,18 +57,27 @@ object FullDischargeTest {
     }
 
     fun latestCapacityEstimateMah(context: Context): Int? {
+        return latestResult(context)?.capacityEstimateMah
+    }
+
+    fun latestResult(context: Context): Result? {
         val file = File(context.filesDir, FILE_NAME)
         if (!file.exists() || file.length() == 0L) return null
         return try {
             val lines = file.readLines().filter { it.isNotBlank() }
             if (lines.size < 2) return null
             val headers = lines.first().split(",").map { it.trim() }
+            val startIndex = headers.indexOf("Time_date_start")
             val capacityIndex = headers.indexOf("CapacityEstimate_mAh")
-            if (capacityIndex < 0) return null
+            if (startIndex < 0 || capacityIndex < 0) return null
             lines.asReversed()
                 .dropLast(1)
                 .mapNotNull { line ->
-                    line.split(",").getOrNull(capacityIndex)?.trim()?.toIntOrNull()
+                    val parts = line.split(",")
+                    Result(
+                        startTimestampText = parts.getOrNull(startIndex)?.trim()?.takeIf { it.isNotEmpty() } ?: return@mapNotNull null,
+                        capacityEstimateMah = parts.getOrNull(capacityIndex)?.trim()?.toIntOrNull() ?: return@mapNotNull null
+                    )
                 }
                 .firstOrNull()
         } catch (_: Exception) {

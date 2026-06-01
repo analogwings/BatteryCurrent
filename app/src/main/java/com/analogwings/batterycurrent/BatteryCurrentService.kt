@@ -1376,67 +1376,18 @@ class BatteryCurrentService : Service() {
     }
 
     private fun buildCapacityEstimateText(estimateMah: Int?): SpannableString {
-        val ratedLabel = "Rated: "
-        val ratedValue = BatteryCapacityReference.originalCapacityMah(this)
-            ?.let { String.format(Locale.US, "%dmAh", it) }
-            ?: "--"
-        val fullDischargeLabel = "  FD: "
-        val fullDischargeValue = FullDischargeTest.latestCapacityEstimateMah(this)
-            ?.let { String.format(Locale.US, "%dmAh", it) }
-            ?: "--"
-        val capacityLabel = "  Est: "
-        val capacityValue = estimateMah?.let { String.format(Locale.US, "%dmAh", it) } ?: "--"
+        val capacityLine = buildPrimaryCapacityLine(estimateMah)
         val peukertLabel = "\nBatt. capcty load sensitivity: "
         val peukertValue = latestPeukertConstant()
-            ?.let { value -> String.format(Locale.US, "k=%.3f %s", value, peukertSensitivityMessage(value)) }
+            ?.let { value -> String.format(Locale.US, "k=%.2f (%s)", value, peukertSensitivityMessage(value)) }
             ?: "not enough data"
-        val firstLine = ratedLabel + ratedValue + fullDischargeLabel + fullDischargeValue + capacityLabel + capacityValue
-        val fullText = firstLine + peukertLabel + peukertValue
-        val ratedValueStart = ratedLabel.length
-        val fullDischargeLabelStart = ratedValueStart + ratedValue.length
-        val fullDischargeValueStart = fullDischargeLabelStart + fullDischargeLabel.length
-        val capacityLabelStart = fullDischargeValueStart + fullDischargeValue.length
-        val capacityValueStart = capacityLabelStart + capacityLabel.length
-        val peukertLabelStart = firstLine.length
+        val fullText = capacityLine.text + peukertLabel + peukertValue
+        val peukertLabelStart = capacityLine.text.length
         val peukertValueStart = peukertLabelStart + peukertLabel.length
 
         return SpannableString(fullText).apply {
-            setSpan(
-                ForegroundColorSpan(graphEstimateLabelColor),
-                0,
-                ratedValueStart,
-                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
-            )
-            setSpan(
-                ForegroundColorSpan(graphCoolTextColor),
-                ratedValueStart,
-                fullDischargeLabelStart,
-                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
-            )
-            setSpan(
-                ForegroundColorSpan(graphEstimateLabelColor),
-                fullDischargeLabelStart,
-                fullDischargeValueStart,
-                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
-            )
-            setSpan(
-                ForegroundColorSpan(graphCoolTextColor),
-                fullDischargeValueStart,
-                capacityLabelStart,
-                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
-            )
-            setSpan(
-                ForegroundColorSpan(graphEstimateLabelColor),
-                capacityLabelStart,
-                capacityValueStart,
-                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
-            )
-            setSpan(
-                ForegroundColorSpan(estimateMah?.let { capacityEstimateColor(it) } ?: graphCoolTextColor),
-                capacityValueStart,
-                peukertLabelStart,
-                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
-            )
+            setSpan(ForegroundColorSpan(graphEstimateLabelColor), 0, capacityLine.valueStart, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+            setSpan(ForegroundColorSpan(capacityLine.valueColor), capacityLine.valueStart, capacityLine.text.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
             setSpan(
                 ForegroundColorSpan(graphEstimateLabelColor),
                 peukertLabelStart,
@@ -1449,6 +1400,54 @@ class BatteryCurrentService : Service() {
                 fullText.length,
                 Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
             )
+        }
+    }
+
+    private data class CapacityLine(
+        val text: String,
+        val valueStart: Int,
+        val valueColor: Int
+    )
+
+    private fun buildPrimaryCapacityLine(estimateMah: Int?): CapacityLine {
+        val fdResult = FullDischargeTest.latestResult(this)
+        if (fdResult != null) {
+            val label = "Full Discharge battery capacity [${fdResult.startTimestampText}]: "
+            val rawValue = String.format(Locale.US, "%dmAh", fdResult.capacityEstimateMah)
+            val adjustedValue = adjustedFullDischargeCapacity(fdResult)
+            val suffix = String.format(Locale.US, " Adj: %dmAh", adjustedValue)
+            return CapacityLine(
+                text = label + rawValue + suffix,
+                valueStart = label.length,
+                valueColor = capacityEstimateColor(adjustedValue)
+            )
+        }
+
+        val label = "Estimated battery capacity: "
+        val value = estimateMah?.let { String.format(Locale.US, "%dmAh", it) } ?: "--"
+        return CapacityLine(
+            text = label + value,
+            valueStart = label.length,
+            valueColor = estimateMah?.let { capacityEstimateColor(it) } ?: graphCoolTextColor
+        )
+    }
+
+    private fun adjustedFullDischargeCapacity(fdResult: FullDischargeTest.Result): Int {
+        val fdTimestampMs = parseCapacityDate(fdResult.startTimestampText) ?: return fdResult.capacityEstimateMah
+        val anchorEstimate = capacityEstimator.estimateNearTimestamp(fdTimestampMs)
+        val recentEstimate = capacityEstimator.recentWeightedEstimate()
+        if (anchorEstimate == null || recentEstimate == null || anchorEstimate <= 0) {
+            return fdResult.capacityEstimateMah
+        }
+        val ratio = (recentEstimate.toDouble() / anchorEstimate).coerceIn(0.95, 1.05)
+        return (fdResult.capacityEstimateMah * ratio).roundToInt()
+    }
+
+    private fun parseCapacityDate(text: String): Long? {
+        return try {
+            SimpleDateFormat("yyyy_MM_dd_HHmm", Locale.US).parse(text)?.time
+        } catch (_: Exception) {
+            null
         }
     }
 
