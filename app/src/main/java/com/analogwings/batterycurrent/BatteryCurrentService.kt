@@ -1788,7 +1788,7 @@ class BatteryCurrentService : Service() {
             })
 
             addView(TextView(this@BatteryCurrentService).apply {
-                text = "Deviation from ideal linear SOC. 0.05 means that bucket stores 5% more mAh than the learned average bucket."
+                text = "Deviation from ideal linear SOC. Extreme outliers are ignored so one bad sample does not dominate the curve."
                 textSize = 11f
                 setTextColor(Color.argb(220, 255, 255, 255))
                 setPadding(0, 6, 0, 8)
@@ -1801,13 +1801,13 @@ class BatteryCurrentService : Service() {
                 430
             ))
 
-            val learnedBucketCount = points.size
-            val maxDeviation = points.maxOfOrNull { abs(it.deviationFromIdeal) }
+            val learnedSampleCount = points.size
+            val maxCurveDeviation = maxSocCurveDeviation(points)
             addView(TextView(this@BatteryCurrentService).apply {
-                text = if (learnedBucketCount == 0) {
+                text = if (learnedSampleCount == 0) {
                     "No SOC bucket data yet. Data fills in as battery % changes while monitoring."
                 } else {
-                    String.format(Locale.US, "%d buckets learned, max deviation %.3f", learnedBucketCount, maxDeviation ?: 0.0)
+                    String.format(Locale.US, "%d samples learned, max fitted deviation %.0f%%", learnedSampleCount, maxCurveDeviation * 100.0)
                 }
                 textSize = 11f
                 setTextColor(graphEstimateLabelColor)
@@ -1824,6 +1824,22 @@ class BatteryCurrentService : Service() {
         ).apply {
             setMargins(0, 10, 0, 4)
         })
+    }
+
+    private fun maxSocCurveDeviation(points: List<BatteryCapacityEstimator.SocLinearityPoint>): Double {
+        return points
+            .groupBy { it.midpointPct }
+            .map { (_, bucketPoints) ->
+                val totalWeight = bucketPoints.sumOf { it.sampleCount.coerceAtLeast(1) }
+                if (totalWeight <= 0) {
+                    0.0
+                } else {
+                    bucketPoints.sumOf { point ->
+                        point.deviationFromIdeal * point.sampleCount.coerceAtLeast(1)
+                    } / totalWeight
+                }
+            }
+            .maxOfOrNull { abs(it) } ?: 0.0
     }
 
     private fun removeSocCurvePopup() {
@@ -1910,7 +1926,7 @@ class BatteryCurrentService : Service() {
 
                 addView(Button(this@BatteryCurrentService).apply {
                     styleGraphMenuButton(this)
-                    text = "SOC Curve"
+                    text = "SOC Lin"
                     setOnClickListener { showSocCurvePopup() }
                 })
             })

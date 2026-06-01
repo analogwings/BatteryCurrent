@@ -269,10 +269,12 @@ class BatteryCapacityEstimator(private val context: Context) {
         readSocBucketSamples()
             .takeIf { it.isNotEmpty() }
             ?.let { samples ->
-                val idealMah = samples.map { it.learnedMah }.average()
+                val filteredSamples = filterSocLinearityOutliers(samples)
+                val displaySamples = filteredSamples.takeLast(MAX_SOC_LINEARITY_DISPLAY_SAMPLES)
+                val idealMah = displaySamples.map { it.learnedMah }.average()
                 if (idealMah <= 0.0) return emptyList()
 
-                return samples.map { sample ->
+                return displaySamples.map { sample ->
                     SocLinearityPoint(
                         bucketStartPct = sample.bucketStartPct,
                         bucketEndPct = sample.bucketEndPct,
@@ -308,6 +310,39 @@ class BatteryCapacityEstimator(private val context: Context) {
                 sampleCount = bucket.sampleCount
             )
         }
+    }
+
+    private fun filterSocLinearityOutliers(samples: List<SocBucketSample>): List<SocBucketSample> {
+        if (samples.size < MIN_SOC_OUTLIER_FILTER_SAMPLES) return samples
+
+        val learnedValues = samples.map { it.learnedMah }.filter { it > 0.0 }.sorted()
+        if (learnedValues.size < MIN_SOC_OUTLIER_FILTER_SAMPLES) return samples
+
+        val q1 = percentile(learnedValues, 0.25)
+        val median = percentile(learnedValues, 0.50)
+        val q3 = percentile(learnedValues, 0.75)
+        val iqr = q3 - q1
+        if (median <= 0.0 || iqr <= 0.0) return samples
+
+        val lowerFence = maxOf(0.0, q1 - SOC_OUTLIER_IQR_MULTIPLIER * iqr, median * SOC_OUTLIER_MIN_MEDIAN_RATIO)
+        val upperFence = minOf(q3 + SOC_OUTLIER_IQR_MULTIPLIER * iqr, median * SOC_OUTLIER_MAX_MEDIAN_RATIO)
+        val filtered = samples.filter { it.learnedMah in lowerFence..upperFence }
+
+        return if (filtered.size >= maxOf(MIN_SOC_OUTLIER_FILTER_SAMPLES / 2, samples.size / 2)) {
+            filtered
+        } else {
+            samples
+        }
+    }
+
+    private fun percentile(sortedValues: List<Double>, fraction: Double): Double {
+        if (sortedValues.isEmpty()) return 0.0
+        val clampedFraction = fraction.coerceIn(0.0, 1.0)
+        val index = clampedFraction * (sortedValues.size - 1)
+        val lowerIndex = index.toInt().coerceIn(0, sortedValues.lastIndex)
+        val upperIndex = (lowerIndex + 1).coerceAtMost(sortedValues.lastIndex)
+        val weight = index - lowerIndex
+        return sortedValues[lowerIndex] * (1.0 - weight) + sortedValues[upperIndex] * weight
     }
 
     private fun processEventSample(
@@ -1068,6 +1103,11 @@ class BatteryCapacityEstimator(private val context: Context) {
         private const val LAST_SOC_BUCKET_DIRECTION_KEY = "last_soc_bucket_direction"
         private const val SOC_BUCKET_PERCENT_SPAN = 10
         private const val MAX_SOC_BUCKET_SAMPLES = 2000
+        private const val MAX_SOC_LINEARITY_DISPLAY_SAMPLES = 100
+        private const val MIN_SOC_OUTLIER_FILTER_SAMPLES = 8
+        private const val SOC_OUTLIER_IQR_MULTIPLIER = 1.5
+        private const val SOC_OUTLIER_MIN_MEDIAN_RATIO = 0.25
+        private const val SOC_OUTLIER_MAX_MEDIAN_RATIO = 2.0
         private const val PEUKERT_REFERENCE_CURRENT_MA = 1000.0
         private const val MINIMUM_PEUKERT_CURRENT_MA = 50.0
         private const val MINIMUM_PEUKERT_CURRENT_SPREAD_RATIO = 1.33
