@@ -35,6 +35,7 @@ object FullDischargeTest {
     private const val LAST_SAMPLE_TIMESTAMP_KEY = "last_sample_timestamp_ms"
     private const val TOP_OFF_START_TIMESTAMP_KEY = "top_off_start_timestamp_ms"
     private const val DISCONNECT_PROMPT_TIMESTAMP_KEY = "disconnect_prompt_timestamp_ms"
+    private const val DISCONNECT_TIMESTAMP_KEY = "disconnect_timestamp_ms"
     private const val UNPLUGGED_AFTER_PROMPT_KEY = "unplugged_after_prompt"
     private const val FILE_NAME = "battery_calibration_tests.csv"
     private const val START_PERCENT = 95
@@ -70,15 +71,35 @@ object FullDischargeTest {
         return prefs(context).getBoolean(ACTIVE_KEY, false)
     }
 
+    fun isWaitingForDisconnect(context: Context): Boolean {
+        val prefs = prefs(context)
+        return prefs.getBoolean(PENDING_START_KEY, false) &&
+            prefs.getLong(DISCONNECT_PROMPT_TIMESTAMP_KEY, 0L) > 0L &&
+            !prefs.getBoolean(UNPLUGGED_AFTER_PROMPT_KEY, false)
+    }
+
+    fun isPostDisconnectWaitingForStart(context: Context): Boolean {
+        val prefs = prefs(context)
+        return prefs.getBoolean(PENDING_START_KEY, false) &&
+            prefs.getBoolean(UNPLUGGED_AFTER_PROMPT_KEY, false)
+    }
+
     fun foregroundPrefix(context: Context, nowMs: Long = System.currentTimeMillis()): String? {
         if (!isModeEnabled(context)) return null
         val prefs = prefs(context)
-        val remainingMinutes = countdownRemainingMinutes(prefs, nowMs)
-        return if (remainingMinutes != null) {
-            "CAL-$remainingMinutes:"
+        val remainingMinutes = topOffRemainingMinutes(prefs, nowMs)
+        if (remainingMinutes != null) return "CAL-$remainingMinutes:"
+
+        val elapsedMinutes = postDisconnectElapsedMinutes(prefs, nowMs)
+        return if (elapsedMinutes != null) {
+            "CAL+$elapsedMinutes:"
         } else {
             "CAL:"
         }
+    }
+
+    fun shouldBlinkForegroundPrefix(context: Context): Boolean {
+        return isWaitingForDisconnect(context)
     }
 
     fun statusText(context: Context, nowMs: Long = System.currentTimeMillis()): String? {
@@ -269,16 +290,12 @@ object FullDischargeTest {
             val editor = prefs.edit()
                 .putBoolean(UNPLUGGED_AFTER_PROMPT_KEY, true)
                 .putLong(LAST_SAMPLE_TIMESTAMP_KEY, nowMs)
+            if (!unpluggedAfterPrompt) {
+                editor.putLong(DISCONNECT_TIMESTAMP_KEY, nowMs)
+            }
             editor.apply()
 
             if (!unpluggedAfterPrompt && batteryPercent <= END_PERCENT) {
-                clearTestState(prefs.edit())
-                    .putBoolean(MODE_ENABLED_KEY, false)
-                    .apply()
-                return SampleResult.ABORTED
-            }
-
-            if (nowMs - disconnectPromptMs > DISCONNECT_WAIT_MS && batteryPercent > START_PERCENT) {
                 clearTestState(prefs.edit())
                     .putBoolean(MODE_ENABLED_KEY, false)
                     .apply()
@@ -377,6 +394,7 @@ object FullDischargeTest {
             .remove(LAST_SAMPLE_TIMESTAMP_KEY)
             .remove(TOP_OFF_START_TIMESTAMP_KEY)
             .remove(DISCONNECT_PROMPT_TIMESTAMP_KEY)
+            .remove(DISCONNECT_TIMESTAMP_KEY)
             .remove(UNPLUGGED_AFTER_PROMPT_KEY)
     }
 
@@ -387,24 +405,32 @@ object FullDischargeTest {
         val disconnectPromptMs = prefs.getLong(DISCONNECT_PROMPT_TIMESTAMP_KEY, 0L)
         val unpluggedAfterPrompt = prefs.getBoolean(UNPLUGGED_AFTER_PROMPT_KEY, false)
         return when {
-            disconnectPromptMs > 0L && unpluggedAfterPrompt -> "Calibration armed: waiting for battery to fall to 95%."
+            disconnectPromptMs > 0L && unpluggedAfterPrompt -> {
+                val elapsed = postDisconnectElapsedMinutes(prefs, nowMs) ?: 0
+                "Cal: discharge to 95% (${elapsed} min since disconnect)."
+            }
             disconnectPromptMs > 0L -> "Calibration ready: disconnect charger within ${remainingMinutes(disconnectPromptMs, DISCONNECT_WAIT_MS, nowMs)} min."
             topOffStartMs > 0L -> "Calibration top-off countdown: ${remainingMinutes(topOffStartMs, TOP_OFF_WAIT_MS, nowMs)} min left. Keep charger connected."
             else -> "Calibration armed: keep charger connected until 100%."
         }
     }
 
-    private fun countdownRemainingMinutes(prefs: android.content.SharedPreferences, nowMs: Long): Int? {
+    private fun topOffRemainingMinutes(prefs: android.content.SharedPreferences, nowMs: Long): Int? {
         if (!prefs.getBoolean(PENDING_START_KEY, false)) return null
         val disconnectPromptMs = prefs.getLong(DISCONNECT_PROMPT_TIMESTAMP_KEY, 0L)
-        if (disconnectPromptMs > 0L && !prefs.getBoolean(UNPLUGGED_AFTER_PROMPT_KEY, false)) {
-            return remainingMinutes(disconnectPromptMs, DISCONNECT_WAIT_MS, nowMs)
-        }
         val topOffStartMs = prefs.getLong(TOP_OFF_START_TIMESTAMP_KEY, 0L)
         if (topOffStartMs > 0L && disconnectPromptMs <= 0L) {
             return remainingMinutes(topOffStartMs, TOP_OFF_WAIT_MS, nowMs)
         }
         return null
+    }
+
+    private fun postDisconnectElapsedMinutes(prefs: android.content.SharedPreferences, nowMs: Long): Int? {
+        if (!prefs.getBoolean(PENDING_START_KEY, false)) return null
+        if (!prefs.getBoolean(UNPLUGGED_AFTER_PROMPT_KEY, false)) return null
+        val disconnectMs = prefs.getLong(DISCONNECT_TIMESTAMP_KEY, 0L)
+        if (disconnectMs <= 0L) return null
+        return (((nowMs - disconnectMs).coerceAtLeast(0L)) / 60_000L).toInt()
     }
 
     private fun remainingMinutes(startMs: Long, durationMs: Long, nowMs: Long): Int {

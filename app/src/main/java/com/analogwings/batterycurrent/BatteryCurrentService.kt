@@ -588,10 +588,10 @@ class BatteryCurrentService : Service() {
         )) {
             FullDischargeTest.SampleResult.PENDING -> Unit
             FullDischargeTest.SampleResult.TOP_OFF_STARTED -> {
-                playCalibrationNoticeSound()
                 Toast.makeText(this, "Calibration top-off started: wait 10 minutes", Toast.LENGTH_LONG).show()
             }
             FullDischargeTest.SampleResult.READY_TO_DISCONNECT -> {
+                playCalibrationNoticeSound()
                 Toast.makeText(this, "Calibration ready: disconnect charger within 10 minutes", Toast.LENGTH_LONG).show()
             }
             FullDischargeTest.SampleResult.WAITING_FOR_DISCONNECT -> Unit
@@ -780,6 +780,17 @@ class BatteryCurrentService : Service() {
         val dotColor = foregroundCapacityStatusDotColor(now)
         val displayText = if (dotColor == null) prefixedText else "$prefixedText \u2022"
         return styleLiveDisplayText(displayText, useLightOverlayPalette = isLightOverlayEnabled()).apply {
+            if (calibrationPrefix != null && FullDischargeTest.shouldBlinkForegroundPrefix(this@BatteryCurrentService)) {
+                val showPrefix = ((now - graphOverlayCreatedAtMs.coerceAtLeast(sessionStartMs)) / CALIBRATION_DOT_BLINK_MS) % 2L == 0L
+                if (!showPrefix) {
+                    setSpan(
+                        ForegroundColorSpan(Color.TRANSPARENT),
+                        0,
+                        calibrationPrefix.length,
+                        Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+                    )
+                }
+            }
             if (dotColor != null) {
                 setSpan(
                     ForegroundColorSpan(dotColor),
@@ -793,7 +804,9 @@ class BatteryCurrentService : Service() {
 
     private fun foregroundCapacityStatusDotColor(now: Long): Int? {
         return when {
-            FullDischargeTest.isMeasurementActive(this) -> {
+            FullDischargeTest.isMeasurementActive(this) ||
+                FullDischargeTest.isWaitingForDisconnect(this) ||
+                FullDischargeTest.isPostDisconnectWaitingForStart(this) -> {
                 val showDot = ((now - graphOverlayCreatedAtMs.coerceAtLeast(sessionStartMs)) / CALIBRATION_DOT_BLINK_MS) % 2L == 0L
                 if (showDot) graphDischargeTextColor else Color.TRANSPARENT
             }
@@ -1342,7 +1355,9 @@ class BatteryCurrentService : Service() {
     private fun updateCapacityEventIndicator(titleRow: LinearLayout?, now: Long) {
         val dotView = titleRow?.getChildAt(0) as? TextView ?: return
         when {
-            FullDischargeTest.isMeasurementActive(this) -> {
+            FullDischargeTest.isMeasurementActive(this) ||
+                FullDischargeTest.isWaitingForDisconnect(this) ||
+                FullDischargeTest.isPostDisconnectWaitingForStart(this) -> {
                 val showDot = ((now - graphOverlayCreatedAtMs) / CALIBRATION_DOT_BLINK_MS) % 2L == 0L
                 dotView.visibility = if (showDot) View.VISIBLE else View.INVISIBLE
                 dotView.setTextColor(graphDischargeTextColor)
