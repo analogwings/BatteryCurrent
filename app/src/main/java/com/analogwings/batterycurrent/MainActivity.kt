@@ -402,17 +402,17 @@ private fun FullDischargeTestDialog(
         text = {
             Column {
                 Text(
-                    text = "For calibration, charge the phone until the battery percentage reads 100%, then leave it connected for 20 minutes after it reaches 100%. Do not run this often, because deep discharge cycles add battery stress.",
+                    text = "For calibration, press Start while the phone is charging. The app will wait for 100%, run a 20 minute top-off timer, then prompt you to disconnect the charger.",
                     style = MaterialTheme.typography.bodyMedium
                 )
                 Spacer(modifier = Modifier.height(8.dp))
                 Text(
-                    text = "After the 20 minute wait, disconnect the charger. Press Start below to arm calibration. The startup screen will close and the graph will open. The app starts measuring automatically when the phone reaches 95% and stops at 10%.",
+                    text = "After the disconnect prompt, unplug within 20 minutes. The graph opens immediately, but measurement starts automatically when the phone falls to 95% and stops at 10%.",
                     style = MaterialTheme.typography.bodyMedium
                 )
                 Spacer(modifier = Modifier.height(8.dp))
                 Text(
-                    text = "If the phone powers off, the app is stopped, or a charger is connected after measurement begins, the incomplete calibration is discarded.",
+                    text = "If charging is interrupted before the prompt, the phone powers off, the app is stopped, or a charger is connected during discharge, the incomplete calibration is discarded.",
                     style = MaterialTheme.typography.bodySmall
                 )
             }

@@ -6,12 +6,18 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import kotlin.math.abs
+import kotlin.math.ceil
 import kotlin.math.roundToInt
 
 object FullDischargeTest {
     data class Result(
         val startTimestampText: String,
-        val capacityEstimateMah: Int
+        val endTimestampText: String?,
+        val dischargedMah: Int?,
+        val capacityEstimateMah: Int,
+        val avgTempC: Double?,
+        val avgVoltageV: Double?,
+        val avgCurrentMa: Double?
     )
 
     private const val PREFS_NAME = "battery_current_full_discharge_test"
@@ -27,11 +33,17 @@ object FullDischargeTest {
     private const val CURRENT_COUNT_KEY = "current_count"
     private const val CURRENT_SUM_KEY = "current_sum_ma"
     private const val LAST_SAMPLE_TIMESTAMP_KEY = "last_sample_timestamp_ms"
+    private const val TOP_OFF_START_TIMESTAMP_KEY = "top_off_start_timestamp_ms"
+    private const val DISCONNECT_PROMPT_TIMESTAMP_KEY = "disconnect_prompt_timestamp_ms"
+    private const val UNPLUGGED_AFTER_PROMPT_KEY = "unplugged_after_prompt"
     private const val FILE_NAME = "battery_calibration_tests.csv"
     private const val START_PERCENT = 95
     private const val END_PERCENT = 10
+    private const val FULL_PERCENT = 100
     private const val CALIBRATION_SPAN_FRACTION = 0.85
     private const val INTERRUPTION_STALE_MS = 45_000L
+    private const val TOP_OFF_WAIT_MS = 20 * 60_000L
+    private const val DISCONNECT_WAIT_MS = 20 * 60_000L
 
     fun isModeEnabled(context: Context): Boolean {
         return prefs(context).getBoolean(MODE_ENABLED_KEY, false)
@@ -54,6 +66,31 @@ object FullDischargeTest {
         return prefs.getBoolean(ACTIVE_KEY, false) || prefs.getBoolean(PENDING_START_KEY, false)
     }
 
+    fun isMeasurementActive(context: Context): Boolean {
+        return prefs(context).getBoolean(ACTIVE_KEY, false)
+    }
+
+    fun foregroundPrefix(context: Context, nowMs: Long = System.currentTimeMillis()): String? {
+        if (!isModeEnabled(context)) return null
+        val prefs = prefs(context)
+        val remainingMinutes = countdownRemainingMinutes(prefs, nowMs)
+        return if (remainingMinutes != null) {
+            "CAL-$remainingMinutes:"
+        } else {
+            "CAL:"
+        }
+    }
+
+    fun statusText(context: Context, nowMs: Long = System.currentTimeMillis()): String? {
+        if (!isModeEnabled(context)) return null
+        val prefs = prefs(context)
+        return when {
+            prefs.getBoolean(ACTIVE_KEY, false) -> "Calibration measuring: discharge to 10%."
+            prefs.getBoolean(PENDING_START_KEY, false) -> pendingStatusText(prefs, nowMs)
+            else -> "Calibration enabled."
+        }
+    }
+
     fun latestCapacityEstimateMah(context: Context): Int? {
         return latestResult(context)?.capacityEstimateMah
     }
@@ -66,9 +103,14 @@ object FullDischargeTest {
             if (lines.size < 2) return null
             val headers = lines.first().split(",").map { it.trim() }
             val startIndex = headers.indexOf("Time_date_start")
+            val endIndex = headers.indexOf("Time_date_end")
+            val dischargedIndex = headers.indexOf("mAh_discharged")
             val capacityIndex = headers.indexOf("CalibrationCapacity_mAh")
                 .takeIf { it >= 0 }
                 ?: headers.indexOf("CapacityEstimate_mAh")
+            val tempIndex = headers.indexOf("AvgTemp_C")
+            val voltageIndex = headers.indexOf("AvgVoltage_V")
+            val currentIndex = headers.indexOf("AvgCurrent_mA")
             if (startIndex < 0 || capacityIndex < 0) return null
             lines.asReversed()
                 .dropLast(1)
@@ -76,7 +118,12 @@ object FullDischargeTest {
                     val parts = line.split(",")
                     Result(
                         startTimestampText = parts.getOrNull(startIndex)?.trim()?.takeIf { it.isNotEmpty() } ?: return@mapNotNull null,
-                        capacityEstimateMah = parts.getOrNull(capacityIndex)?.trim()?.toIntOrNull() ?: return@mapNotNull null
+                        endTimestampText = parts.getOrNull(endIndex)?.trim()?.takeIf { it.isNotEmpty() },
+                        dischargedMah = parts.getOrNull(dischargedIndex)?.trim()?.toIntOrNull(),
+                        capacityEstimateMah = parts.getOrNull(capacityIndex)?.trim()?.toIntOrNull() ?: return@mapNotNull null,
+                        avgTempC = parts.getOrNull(tempIndex)?.trim()?.toDoubleOrNull(),
+                        avgVoltageV = parts.getOrNull(voltageIndex)?.trim()?.toDoubleOrNull(),
+                        avgCurrentMa = parts.getOrNull(currentIndex)?.trim()?.toDoubleOrNull()
                     )
                 }
                 .firstOrNull()
@@ -94,6 +141,24 @@ object FullDischargeTest {
                 .putBoolean(MODE_ENABLED_KEY, false)
                 .apply()
         }
+    }
+
+    fun abortIfIllegalPowerState(context: Context, pluggedIn: Boolean): Boolean {
+        val prefs = prefs(context)
+        if (!prefs.getBoolean(MODE_ENABLED_KEY, false)) return false
+
+        val pending = prefs.getBoolean(PENDING_START_KEY, false)
+        val active = prefs.getBoolean(ACTIVE_KEY, false)
+        val disconnectPromptMs = prefs.getLong(DISCONNECT_PROMPT_TIMESTAMP_KEY, 0L)
+
+        val illegalPendingUnplug = pending && disconnectPromptMs <= 0L && !pluggedIn
+        val illegalActivePlugIn = active && pluggedIn
+        if (!illegalPendingUnplug && !illegalActivePlugIn) return false
+
+        clearTestState(prefs.edit())
+            .putBoolean(MODE_ENABLED_KEY, false)
+            .apply()
+        return true
     }
 
     fun armCalibrationSetup(
@@ -141,16 +206,87 @@ object FullDischargeTest {
     ): SampleResult {
         val prefs = prefs(context)
         if (prefs.getBoolean(PENDING_START_KEY, false)) {
-            if (batteryPercent == null || (!pluggedIn && batteryPercent <= END_PERCENT)) {
+            if (batteryPercent == null) {
                 clearTestState(prefs.edit())
                     .putBoolean(MODE_ENABLED_KEY, false)
                     .apply()
                 return SampleResult.ABORTED
             }
-            if (pluggedIn || batteryPercent > START_PERCENT) {
+
+            val topOffStartMs = prefs.getLong(TOP_OFF_START_TIMESTAMP_KEY, 0L)
+            val disconnectPromptMs = prefs.getLong(DISCONNECT_PROMPT_TIMESTAMP_KEY, 0L)
+            val unpluggedAfterPrompt = prefs.getBoolean(UNPLUGGED_AFTER_PROMPT_KEY, false)
+
+            if (disconnectPromptMs <= 0L) {
+                if (!pluggedIn) {
+                    clearTestState(prefs.edit())
+                        .putBoolean(MODE_ENABLED_KEY, false)
+                        .apply()
+                    return SampleResult.ABORTED
+                }
+
+                if (topOffStartMs <= 0L) {
+                    val editor = prefs.edit().putLong(LAST_SAMPLE_TIMESTAMP_KEY, nowMs)
+                    if (batteryPercent >= FULL_PERCENT) {
+                        editor.putLong(TOP_OFF_START_TIMESTAMP_KEY, nowMs).apply()
+                        return SampleResult.TOP_OFF_STARTED
+                    }
+                    editor.apply()
+                    return SampleResult.PENDING
+                }
+
+                if (batteryPercent < FULL_PERCENT) {
+                    prefs.edit()
+                        .remove(TOP_OFF_START_TIMESTAMP_KEY)
+                        .putLong(LAST_SAMPLE_TIMESTAMP_KEY, nowMs)
+                        .apply()
+                    return SampleResult.PENDING
+                }
+
+                if (nowMs - topOffStartMs >= TOP_OFF_WAIT_MS) {
+                    prefs.edit()
+                        .putLong(DISCONNECT_PROMPT_TIMESTAMP_KEY, nowMs)
+                        .putLong(LAST_SAMPLE_TIMESTAMP_KEY, nowMs)
+                        .apply()
+                    return SampleResult.READY_TO_DISCONNECT
+                }
+
                 prefs.edit().putLong(LAST_SAMPLE_TIMESTAMP_KEY, nowMs).apply()
                 return SampleResult.PENDING
             }
+
+            if (pluggedIn) {
+                if (nowMs - disconnectPromptMs > DISCONNECT_WAIT_MS) {
+                    clearTestState(prefs.edit())
+                        .putBoolean(MODE_ENABLED_KEY, false)
+                        .apply()
+                    return SampleResult.ABORTED
+                }
+                prefs.edit().putLong(LAST_SAMPLE_TIMESTAMP_KEY, nowMs).apply()
+                return SampleResult.WAITING_FOR_DISCONNECT
+            }
+
+            val editor = prefs.edit()
+                .putBoolean(UNPLUGGED_AFTER_PROMPT_KEY, true)
+                .putLong(LAST_SAMPLE_TIMESTAMP_KEY, nowMs)
+            editor.apply()
+
+            if (!unpluggedAfterPrompt && batteryPercent <= END_PERCENT) {
+                clearTestState(prefs.edit())
+                    .putBoolean(MODE_ENABLED_KEY, false)
+                    .apply()
+                return SampleResult.ABORTED
+            }
+
+            if (nowMs - disconnectPromptMs > DISCONNECT_WAIT_MS && batteryPercent > START_PERCENT) {
+                clearTestState(prefs.edit())
+                    .putBoolean(MODE_ENABLED_KEY, false)
+                    .apply()
+                return SampleResult.ABORTED
+            }
+
+            if (batteryPercent > START_PERCENT) return SampleResult.PENDING
+
             return SampleResult.READY_TO_START
         }
 
@@ -239,9 +375,42 @@ object FullDischargeTest {
             .remove(CURRENT_COUNT_KEY)
             .remove(CURRENT_SUM_KEY)
             .remove(LAST_SAMPLE_TIMESTAMP_KEY)
+            .remove(TOP_OFF_START_TIMESTAMP_KEY)
+            .remove(DISCONNECT_PROMPT_TIMESTAMP_KEY)
+            .remove(UNPLUGGED_AFTER_PROMPT_KEY)
     }
 
     private fun prefs(context: Context) = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+
+    private fun pendingStatusText(prefs: android.content.SharedPreferences, nowMs: Long): String {
+        val topOffStartMs = prefs.getLong(TOP_OFF_START_TIMESTAMP_KEY, 0L)
+        val disconnectPromptMs = prefs.getLong(DISCONNECT_PROMPT_TIMESTAMP_KEY, 0L)
+        val unpluggedAfterPrompt = prefs.getBoolean(UNPLUGGED_AFTER_PROMPT_KEY, false)
+        return when {
+            disconnectPromptMs > 0L && unpluggedAfterPrompt -> "Calibration armed: waiting for battery to fall to 95%."
+            disconnectPromptMs > 0L -> "Calibration ready: disconnect charger within ${remainingMinutes(disconnectPromptMs, DISCONNECT_WAIT_MS, nowMs)} min."
+            topOffStartMs > 0L -> "Calibration top-off countdown: ${remainingMinutes(topOffStartMs, TOP_OFF_WAIT_MS, nowMs)} min left. Keep charger connected."
+            else -> "Calibration armed: keep charger connected until 100%."
+        }
+    }
+
+    private fun countdownRemainingMinutes(prefs: android.content.SharedPreferences, nowMs: Long): Int? {
+        if (!prefs.getBoolean(PENDING_START_KEY, false)) return null
+        val disconnectPromptMs = prefs.getLong(DISCONNECT_PROMPT_TIMESTAMP_KEY, 0L)
+        if (disconnectPromptMs > 0L && !prefs.getBoolean(UNPLUGGED_AFTER_PROMPT_KEY, false)) {
+            return remainingMinutes(disconnectPromptMs, DISCONNECT_WAIT_MS, nowMs)
+        }
+        val topOffStartMs = prefs.getLong(TOP_OFF_START_TIMESTAMP_KEY, 0L)
+        if (topOffStartMs > 0L && disconnectPromptMs <= 0L) {
+            return remainingMinutes(topOffStartMs, TOP_OFF_WAIT_MS, nowMs)
+        }
+        return null
+    }
+
+    private fun remainingMinutes(startMs: Long, durationMs: Long, nowMs: Long): Int {
+        val remainingMs = (durationMs - (nowMs - startMs)).coerceAtLeast(0L)
+        return ceil(remainingMs / 60_000.0).toInt().coerceAtLeast(0)
+    }
 
     private fun averageOrNull(sum: Double, count: Int): Double? {
         return count.takeIf { it > 0 }?.let { sum / it }
@@ -259,6 +428,9 @@ object FullDischargeTest {
     enum class SampleResult {
         INACTIVE,
         PENDING,
+        TOP_OFF_STARTED,
+        READY_TO_DISCONNECT,
+        WAITING_FOR_DISCONNECT,
         READY_TO_START,
         ACTIVE,
         COMPLETED,

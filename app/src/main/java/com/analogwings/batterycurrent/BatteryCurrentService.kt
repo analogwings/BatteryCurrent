@@ -18,6 +18,7 @@ import android.graphics.PixelFormat
 import android.graphics.RectF
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
+import android.media.RingtoneManager
 import android.os.BatteryManager
 import android.os.Build
 import android.os.Handler
@@ -94,6 +95,7 @@ class BatteryCurrentService : Service() {
     private var capacityHistoryPopupView: View? = null
     private var capacityEventDetailsPopupView: View? = null
     private var socCurvePopupView: View? = null
+    private var calibrationResultPopupView: View? = null
     private var graphMenuCollapsed = false
     private val capacityEstimator by lazy { BatteryCapacityEstimator(this) }
 
@@ -240,7 +242,7 @@ class BatteryCurrentService : Service() {
             createOverlayIfAllowed()
             if (intent?.action == ACTION_START_CALIBRATION_SETUP) {
                 when (FullDischargeTest.armCalibrationSetup(this)) {
-                    FullDischargeTest.StartResult.PENDING -> Toast.makeText(this, "Calibration armed: disconnect charger after 20 min top-off", Toast.LENGTH_LONG).show()
+                    FullDischargeTest.StartResult.PENDING -> Toast.makeText(this, "Calibration armed: keep charger connected until prompted", Toast.LENGTH_LONG).show()
                     FullDischargeTest.StartResult.MODE_DISABLED -> Unit
                 }
             }
@@ -275,6 +277,13 @@ class BatteryCurrentService : Service() {
 
         val display = try {
             val batteryStatus = readBatteryStatus()
+            val calibrationAbortedByPower = FullDischargeTest.abortIfIllegalPowerState(
+                this,
+                pluggedIn = isPluggedIn(batteryStatus)
+            )
+            if (calibrationAbortedByPower) {
+                Toast.makeText(this, "Calibration stopped", Toast.LENGTH_LONG).show()
+            }
             val reading = readBatteryCurrentMilliAmps(batteryStatus)
             val temperatureC = readBatteryTemperatureC(batteryStatus)
             if (reading == null) {
@@ -578,12 +587,25 @@ class BatteryCurrentService : Service() {
             nowMs = now
         )) {
             FullDischargeTest.SampleResult.PENDING -> Unit
+            FullDischargeTest.SampleResult.TOP_OFF_STARTED -> {
+                playCalibrationNoticeSound()
+                Toast.makeText(this, "Calibration top-off started: wait 20 minutes", Toast.LENGTH_LONG).show()
+            }
+            FullDischargeTest.SampleResult.READY_TO_DISCONNECT -> {
+                Toast.makeText(this, "Calibration ready: disconnect charger within 20 minutes", Toast.LENGTH_LONG).show()
+            }
+            FullDischargeTest.SampleResult.WAITING_FOR_DISCONNECT -> Unit
             FullDischargeTest.SampleResult.READY_TO_START -> {
                 resetMeasurementAndGraph()
                 FullDischargeTest.markMeasurementStarted(this, totalChargeMah = 0.0, nowMs = now)
                 Toast.makeText(this, "Calibration started at 95%", Toast.LENGTH_LONG).show()
             }
-            FullDischargeTest.SampleResult.COMPLETED -> Toast.makeText(this, "Calibration saved", Toast.LENGTH_LONG).show()
+            FullDischargeTest.SampleResult.COMPLETED -> {
+                val result = FullDischargeTest.latestResult(this)
+                val capacityText = result?.capacityEstimateMah?.let { ": ${it}mAh" } ?: ""
+                showCalibrationResultPopup(result)
+                Toast.makeText(this, "Calibration saved$capacityText", Toast.LENGTH_LONG).show()
+            }
             FullDischargeTest.SampleResult.ABORTED -> Toast.makeText(this, "Calibration stopped", Toast.LENGTH_LONG).show()
             else -> Unit
         }
@@ -753,7 +775,8 @@ class BatteryCurrentService : Service() {
         }
 
         val text = parts.takeIf { it.isNotEmpty() }?.joinToString(" ") ?: formatCurrentText()
-        val prefixedText = if (FullDischargeTest.isModeEnabled(this)) "CAL: $text" else text
+        val calibrationPrefix = FullDischargeTest.foregroundPrefix(this, now)
+        val prefixedText = if (calibrationPrefix != null) "$calibrationPrefix $text" else text
         val dotColor = foregroundCapacityStatusDotColor(now)
         val displayText = if (dotColor == null) prefixedText else "$prefixedText \u2022"
         return styleLiveDisplayText(displayText, useLightOverlayPalette = isLightOverlayEnabled()).apply {
@@ -770,10 +793,11 @@ class BatteryCurrentService : Service() {
 
     private fun foregroundCapacityStatusDotColor(now: Long): Int? {
         return when {
-            FullDischargeTest.isActive(this) -> {
+            FullDischargeTest.isMeasurementActive(this) -> {
                 val showDot = ((now - graphOverlayCreatedAtMs.coerceAtLeast(sessionStartMs)) / CALIBRATION_DOT_BLINK_MS) % 2L == 0L
                 if (showDot) graphDischargeTextColor else Color.TRANSPARENT
             }
+            FullDischargeTest.isModeEnabled(this) -> graphDischargeTextColor
             capacityDisplayState.isEventActive -> {
                 val showDot = ((now - graphOverlayCreatedAtMs.coerceAtLeast(sessionStartMs)) / CALIBRATION_DOT_BLINK_MS) % 2L == 0L
                 if (showDot) graphCoolTextColor else Color.TRANSPARENT
@@ -803,6 +827,19 @@ class BatteryCurrentService : Service() {
             formatSelectedGraphEnergy(),
             formatGraphBatteryPercentText()
         ).joinToString(" ")
+    }
+
+    private fun buildCalibrationStatusText(now: Long): String? {
+        return FullDischargeTest.statusText(this, now)
+    }
+
+    private fun playCalibrationNoticeSound() {
+        try {
+            val uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
+            RingtoneManager.getRingtone(applicationContext, uri)?.play()
+        } catch (_: Exception) {
+            // Sound is helpful but not essential; keep calibration running if audio is unavailable.
+        }
     }
 
     private fun formatGraphElapsedClock(now: Long): String {
@@ -1158,6 +1195,15 @@ class BatteryCurrentService : Service() {
                 setSingleLine(true)
             })
 
+            addView(TextView(this@BatteryCurrentService).apply {
+                textSize = 11f
+                setTypeface(typeface, Typeface.BOLD)
+                setTextColor(graphEstimateLabelColor)
+                gravity = Gravity.CENTER
+                visibility = View.GONE
+                setPadding(0, 0, 0, 10)
+            })
+
             addView(LinearLayout(this@BatteryCurrentService).apply {
                 orientation = LinearLayout.VERTICAL
                 gravity = Gravity.CENTER
@@ -1210,13 +1256,15 @@ class BatteryCurrentService : Service() {
         val container = graphOverlayView ?: return
         val titleRow = container.getChildAt(0) as? LinearLayout
         val summaryView = container.getChildAt(1) as? TextView ?: return
-        val graphView = ((container.getChildAt(2) as? LinearLayout)?.getChildAt(0) as? EnergyGraphView) ?: return
-        val capacityPanel = container.getChildAt(6) as? LinearLayout
+        val calibrationStatusView = container.getChildAt(2) as? TextView ?: return
+        val graphView = ((container.getChildAt(3) as? LinearLayout)?.getChildAt(0) as? EnergyGraphView) ?: return
+        val capacityPanel = container.getChildAt(7) as? LinearLayout
         val versionView = container.getChildAt(container.childCount - 1) as? TextView
 
         val now = System.currentTimeMillis()
         capacityDisplayState = capacityEstimator.displayState()
         summaryView.text = buildLiveSummary(now)
+        updateCalibrationStatusView(calibrationStatusView, now)
         graphView.setPoints(
             graphDisplayPoints(),
             selectedEnergyUnit(),
@@ -1257,14 +1305,12 @@ class BatteryCurrentService : Service() {
     }
 
     private fun updateGraphMenuVisibility(container: LinearLayout) {
-        val toggleText = (container.getChildAt(3) as? LinearLayout)?.getChildAt(0) as? TextView
+        val toggleText = (container.getChildAt(4) as? LinearLayout)?.getChildAt(0) as? TextView
         toggleText?.text = if (graphMenuCollapsed) "\u25BC" else "\u25B2"
 
-        container.childAtOrNull(4)?.visibility = if (graphMenuCollapsed) View.GONE else View.VISIBLE
         container.childAtOrNull(5)?.visibility = if (graphMenuCollapsed) View.GONE else View.VISIBLE
-        if (graphMenuCollapsed) {
-            container.childAtOrNull(6)?.visibility = View.GONE
-        }
+        container.childAtOrNull(6)?.visibility = if (graphMenuCollapsed) View.GONE else View.VISIBLE
+        container.childAtOrNull(7)?.visibility = if (graphMenuCollapsed) View.GONE else View.VISIBLE
         container.childAtOrNull(container.childCount - 1)?.visibility =
             if (graphMenuCollapsed) View.GONE else View.VISIBLE
     }
@@ -1274,8 +1320,18 @@ class BatteryCurrentService : Service() {
     }
 
     private fun updateGraphZoomResetButton() {
-        val graphView = ((graphOverlayView?.getChildAt(2) as? LinearLayout)?.getChildAt(0) as? EnergyGraphView)
+        val graphView = ((graphOverlayView?.getChildAt(3) as? LinearLayout)?.getChildAt(0) as? EnergyGraphView)
         graphView?.invalidate()
+    }
+
+    private fun updateCalibrationStatusView(statusView: TextView, now: Long) {
+        val statusText = buildCalibrationStatusText(now)
+        if (statusText == null) {
+            statusView.visibility = View.GONE
+        } else {
+            statusView.text = statusText
+            statusView.visibility = View.VISIBLE
+        }
     }
 
     private fun updateVersionIndicator(versionView: TextView?, now: Long) {
@@ -1286,9 +1342,13 @@ class BatteryCurrentService : Service() {
     private fun updateCapacityEventIndicator(titleRow: LinearLayout?, now: Long) {
         val dotView = titleRow?.getChildAt(0) as? TextView ?: return
         when {
-            FullDischargeTest.isActive(this) -> {
+            FullDischargeTest.isMeasurementActive(this) -> {
                 val showDot = ((now - graphOverlayCreatedAtMs) / CALIBRATION_DOT_BLINK_MS) % 2L == 0L
                 dotView.visibility = if (showDot) View.VISIBLE else View.INVISIBLE
+                dotView.setTextColor(graphDischargeTextColor)
+            }
+            FullDischargeTest.isModeEnabled(this) -> {
+                dotView.visibility = View.VISIBLE
                 dotView.setTextColor(graphDischargeTextColor)
             }
             capacityDisplayState.isEventActive -> {
@@ -1385,7 +1445,7 @@ class BatteryCurrentService : Service() {
 
     private fun buildCapacityEstimateText(estimateMah: Int?): SpannableString {
         val capacityLine = buildPrimaryCapacityLine(estimateMah)
-        val peukertLabel = "\nBatt. capcty load sensitivity: "
+        val peukertLabel = "\nBatt. capacity load senstvty: "
         val peukertValue = latestPeukertConstant()
             ?.let { value -> String.format(Locale.US, "k=%.2f (%s)", value, peukertSensitivityMessage(value)) }
             ?: "not enough data"
@@ -1842,10 +1902,75 @@ class BatteryCurrentService : Service() {
             .maxOfOrNull { abs(it) } ?: 0.0
     }
 
+    private fun showCalibrationResultPopup(result: FullDischargeTest.Result?) {
+        val graphContainer = graphOverlayView ?: return
+        removeCalibrationResultPopup()
+
+        val popup = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = GradientDrawable().apply {
+                setColor(Color.argb(238, 18, 20, 26))
+                cornerRadius = 12f
+                setStroke(2, Color.argb(190, 255, 255, 255))
+            }
+            setPadding(18, 14, 18, 14)
+            elevation = 34f
+
+            addView(LinearLayout(this@BatteryCurrentService).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                addView(TextView(this@BatteryCurrentService).apply {
+                    text = "Calibration complete"
+                    textSize = 13f
+                    setTypeface(typeface, Typeface.BOLD)
+                    setTextColor(Color.WHITE)
+                }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+                addView(Button(this@BatteryCurrentService).apply {
+                    styleCloseButton(this)
+                    text = "x"
+                    setOnClickListener { removeCalibrationResultPopup() }
+                })
+            })
+
+            addView(TextView(this@BatteryCurrentService).apply {
+                text = calibrationResultText(result)
+                textSize = 12f
+                setTextColor(graphEstimateLabelColor)
+                setPadding(0, 8, 0, 0)
+            })
+        }
+
+        calibrationResultPopupView = popup
+        val insertIndex = (graphContainer.childCount - 1).coerceAtLeast(0)
+        graphContainer.addView(popup, insertIndex, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT
+        ).apply {
+            setMargins(0, 10, 0, 4)
+        })
+    }
+
+    private fun calibrationResultText(result: FullDischargeTest.Result?): String {
+        if (result == null) return "Calibration was saved."
+        val lines = ArrayList<String>()
+        lines.add("Capacity: ${result.capacityEstimateMah}mAh")
+        result.dischargedMah?.let { lines.add("Discharged: ${it}mAh") }
+        result.avgTempC?.let { lines.add(String.format(Locale.US, "Avg temp: %.1f°C", it)) }
+        result.avgVoltageV?.let { lines.add(String.format(Locale.US, "Avg voltage: %.3fV", it)) }
+        result.avgCurrentMa?.let { lines.add(String.format(Locale.US, "Avg current: %.0fmA", it)) }
+        return lines.joinToString("\n")
+    }
+
     private fun removeSocCurvePopup() {
         val view = socCurvePopupView ?: return
         (view.parent as? LinearLayout)?.removeView(view)
         socCurvePopupView = null
+    }
+
+    private fun removeCalibrationResultPopup() {
+        val view = calibrationResultPopupView ?: return
+        (view.parent as? LinearLayout)?.removeView(view)
+        calibrationResultPopupView = null
     }
 
     private fun removeCapacityEventDetailsPopup() {
@@ -1857,6 +1982,7 @@ class BatteryCurrentService : Service() {
     private fun removeCapacityHistoryPopup() {
         removeCapacityEventDetailsPopup()
         removeSocCurvePopup()
+        removeCalibrationResultPopup()
         val view = capacityHistoryPopupView ?: return
         (view.parent as? LinearLayout)?.removeView(view)
         capacityHistoryPopupView = null
@@ -2161,6 +2287,7 @@ class BatteryCurrentService : Service() {
     private fun removeGraphOverlay() {
         removeCapacityHistoryPopup()
         removeSocCurvePopup()
+        removeCalibrationResultPopup()
         val view = graphOverlayView ?: return
         try {
             windowManager?.removeView(view)
@@ -2243,7 +2370,7 @@ class BatteryCurrentService : Service() {
         persistEnergyTracking()
 
         graphOverlayView
-            ?.let { ((it as? LinearLayout)?.getChildAt(2) as? LinearLayout)?.getChildAt(0) as? EnergyGraphView }
+            ?.let { ((it as? LinearLayout)?.getChildAt(3) as? LinearLayout)?.getChildAt(0) as? EnergyGraphView }
             ?.resetViewport()
 
         refreshFloatingOverlayText()
