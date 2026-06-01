@@ -103,7 +103,7 @@ class MainActivity : ComponentActivity() {
                         onFullDischargeStart = {
                             FullDischargeTest.setModeEnabled(this, true)
                             fullDischargeModeState.value = true
-                            requestPermissionThenStart(action = BatteryCurrentService.ACTION_START_FULL_DISCHARGE_TEST)
+                            requestPermissionThenStart(action = BatteryCurrentService.ACTION_START_CALIBRATION_SETUP)
                         },
                         onFullDischargeModeOff = {
                             FullDischargeTest.setModeEnabled(this, false)
@@ -320,7 +320,7 @@ private fun BatteryCurrentScreen(
 
         Spacer(modifier = Modifier.height(12.dp))
 
-        SettingRow(label = "Full discharge test") {
+        SettingRow(label = "Calibration setup") {
             StartupActionButton(
                 text = if (fullDischargeModeEnabled) "ON" else "Start",
                 onClick = { showFullDischargeDialog = true },
@@ -398,28 +398,28 @@ private fun FullDischargeTestDialog(
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Full discharge test") },
+        title = { Text("Calibration setup") },
         text = {
             Column {
                 Text(
-                    text = "Charge the phone until the battery percentage reads 100% and the current drops to 0mA.",
+                    text = "For calibration, charge the phone until the battery percentage reads 100%, then leave it connected for 20 minutes after it reaches 100%. Do not run this often, because deep discharge cycles add battery stress.",
                     style = MaterialTheme.typography.bodyMedium
                 )
                 Spacer(modifier = Modifier.height(8.dp))
                 Text(
-                    text = "DISCONNECT the charger FIRST, THEN press Reset below to clear the graph and mAh reading. The startup screen will close and the graph will open with the test started. Leave monitoring running while the phone discharges.",
+                    text = "After the 20 minute wait, disconnect the charger. Press Start below to arm calibration. The startup screen will close and the graph will open. The app starts measuring automatically when the phone reaches 95% and stops at 10%.",
                     style = MaterialTheme.typography.bodyMedium
                 )
                 Spacer(modifier = Modifier.height(8.dp))
                 Text(
-                    text = "If the phone powers off, the app is stopped, or a charger is connected, the incomplete test is discarded.",
+                    text = "If the phone powers off, the app is stopped, or a charger is connected after measurement begins, the incomplete calibration is discarded.",
                     style = MaterialTheme.typography.bodySmall
                 )
             }
         },
         confirmButton = {
             Button(onClick = if (modeEnabled) onTurnOff else onResetAndStart) {
-                Text(if (modeEnabled) "Turn Off" else "Reset")
+                Text(if (modeEnabled) "Turn Off" else "Start")
             }
         },
         dismissButton = {

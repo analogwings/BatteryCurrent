@@ -55,7 +55,7 @@ class BatteryCurrentService : Service() {
     companion object {
         const val ACTION_SHOW_OVERLAY = "com.analogwings.batterycurrent.SHOW_OVERLAY"
         const val ACTION_SHOW_GRAPH_OVERLAY = "com.analogwings.batterycurrent.SHOW_GRAPH_OVERLAY"
-        const val ACTION_START_FULL_DISCHARGE_TEST = "com.analogwings.batterycurrent.START_FULL_DISCHARGE_TEST"
+        const val ACTION_START_CALIBRATION_SETUP = "com.analogwings.batterycurrent.START_CALIBRATION_SETUP"
         const val ACTION_STOP_MONITORING = "com.analogwings.batterycurrent.STOP_MONITORING"
         const val ACTION_RESET_OVERLAY_POSITION = "com.analogwings.batterycurrent.RESET_OVERLAY_POSITION"
         const val MONITOR_STATE_PREFS_NAME = "battery_current_monitor_state"
@@ -216,9 +216,9 @@ class BatteryCurrentService : Service() {
         initializeEnergyTracking()
         val showOverlay = intent?.action == ACTION_SHOW_OVERLAY ||
             intent?.action == ACTION_SHOW_GRAPH_OVERLAY ||
-            intent?.action == ACTION_START_FULL_DISCHARGE_TEST
+            intent?.action == ACTION_START_CALIBRATION_SETUP
         val showGraph = intent?.action == ACTION_SHOW_GRAPH_OVERLAY ||
-            intent?.action == ACTION_START_FULL_DISCHARGE_TEST
+            intent?.action == ACTION_START_CALIBRATION_SETUP
         when (intent?.action) {
             ACTION_STOP_MONITORING -> {
                 stopMonitoring()
@@ -238,8 +238,11 @@ class BatteryCurrentService : Service() {
         if (showOverlay) {
             updateCurrentDisplay()
             createOverlayIfAllowed()
-            if (intent?.action == ACTION_START_FULL_DISCHARGE_TEST) {
-                resetMeasurementAndGraph()
+            if (intent?.action == ACTION_START_CALIBRATION_SETUP) {
+                when (FullDischargeTest.armCalibrationSetup(this)) {
+                    FullDischargeTest.StartResult.PENDING -> Toast.makeText(this, "Calibration armed: disconnect charger after 20 min top-off", Toast.LENGTH_LONG).show()
+                    FullDischargeTest.StartResult.MODE_DISABLED -> Unit
+                }
             }
             if (showGraph) {
                 showGraphOverlay()
@@ -575,8 +578,13 @@ class BatteryCurrentService : Service() {
             nowMs = now
         )) {
             FullDischargeTest.SampleResult.PENDING -> Unit
-            FullDischargeTest.SampleResult.COMPLETED -> Toast.makeText(this, "Full discharge test saved", Toast.LENGTH_LONG).show()
-            FullDischargeTest.SampleResult.ABORTED -> Toast.makeText(this, "Full discharge test stopped", Toast.LENGTH_LONG).show()
+            FullDischargeTest.SampleResult.READY_TO_START -> {
+                resetMeasurementAndGraph()
+                FullDischargeTest.markMeasurementStarted(this, totalChargeMah = 0.0, nowMs = now)
+                Toast.makeText(this, "Calibration started at 95%", Toast.LENGTH_LONG).show()
+            }
+            FullDischargeTest.SampleResult.COMPLETED -> Toast.makeText(this, "Calibration saved", Toast.LENGTH_LONG).show()
+            FullDischargeTest.SampleResult.ABORTED -> Toast.makeText(this, "Calibration stopped", Toast.LENGTH_LONG).show()
             else -> Unit
         }
         persistEnergyTracking()
@@ -745,7 +753,7 @@ class BatteryCurrentService : Service() {
         }
 
         val text = parts.takeIf { it.isNotEmpty() }?.joinToString(" ") ?: formatCurrentText()
-        val prefixedText = if (FullDischargeTest.isModeEnabled(this)) "FD: $text" else text
+        val prefixedText = if (FullDischargeTest.isModeEnabled(this)) "CAL: $text" else text
         val dotColor = foregroundCapacityStatusDotColor(now)
         val displayText = if (dotColor == null) prefixedText else "$prefixedText \u2022"
         return styleLiveDisplayText(displayText, useLightOverlayPalette = isLightOverlayEnabled()).apply {
@@ -1412,7 +1420,7 @@ class BatteryCurrentService : Service() {
     private fun buildPrimaryCapacityLine(estimateMah: Int?): CapacityLine {
         val fdResult = FullDischargeTest.latestResult(this)
         if (fdResult != null) {
-            val label = "Full Discharge battery capacity [${fdResult.startTimestampText}]: "
+            val label = "Calibration battery capacity [${fdResult.startTimestampText}]: "
             val rawValue = String.format(Locale.US, "%dmAh", fdResult.capacityEstimateMah)
             val adjustedValue = adjustedFullDischargeCapacity(fdResult)
             val suffix = String.format(Locale.US, " Adj: %dmAh", adjustedValue)
@@ -2182,7 +2190,7 @@ class BatteryCurrentService : Service() {
     private fun stopFullDischargeTestIfNeeded() {
         if (!FullDischargeTest.isModeEnabled(this) && !FullDischargeTest.isActive(this)) return
         FullDischargeTest.abortActive(this)
-        Toast.makeText(this, "Full discharge test stopped", Toast.LENGTH_LONG).show()
+        Toast.makeText(this, "Calibration stopped", Toast.LENGTH_LONG).show()
     }
 
     private fun resetMeasurementAndGraph() {
@@ -2221,18 +2229,6 @@ class BatteryCurrentService : Service() {
         graphOverlayView
             ?.let { ((it as? LinearLayout)?.getChildAt(2) as? LinearLayout)?.getChildAt(0) as? EnergyGraphView }
             ?.resetViewport()
-
-        when (FullDischargeTest.tryStartFromReset(
-            context = this,
-            batteryPercent = latestBatteryPercent,
-            pluggedIn = lastPluggedState,
-            nowMs = now
-        )) {
-            FullDischargeTest.StartResult.PENDING -> Toast.makeText(this, "Full discharge test starting in 10 seconds", Toast.LENGTH_LONG).show()
-            FullDischargeTest.StartResult.CHARGER_CONNECTED -> Toast.makeText(this, "Disconnect charger to start FD test", Toast.LENGTH_LONG).show()
-            FullDischargeTest.StartResult.NOT_READY -> Toast.makeText(this, "FD test needs 100% battery", Toast.LENGTH_LONG).show()
-            FullDischargeTest.StartResult.MODE_DISABLED -> Unit
-        }
 
         refreshFloatingOverlayText()
     }

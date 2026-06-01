@@ -212,19 +212,19 @@ def build_manual():
     doc.add_heading("2. Starting the App", level=1)
     doc.add_paragraph(
         "When BatteryCurrent starts, the startup page provides monitoring controls, foreground display options, original battery capacity entry, "
-        "and a full-discharge test launcher. Starting monitoring opens the foreground display and shows the current live values. "
+        "and a calibration setup launcher. Starting monitoring opens the foreground display and shows the current live values. "
         "On the first run the foreground display opens near the center of the display. On later runs it reopens at the last dragged position."
     )
     add_numbered(doc, [
         "Open BatteryCurrent from the app launcher.",
         "Grant the overlay permission if Android asks for it.",
-        "Use Start monitoring to show the foreground display, or use Full discharge test when performing a controlled full-discharge measurement.",
+        "Use Start monitoring to show the foreground display, or use Calibration setup when performing an occasional controlled calibration measurement.",
         "Tap the foreground display to open the graph popup.",
     ])
     add_key_value_table(doc, [
         ("X button", "Closes the startup page without changing the monitoring state."),
         ("Reset foreground display", "Moves the floating display back to the center if it was dragged to an unreachable edge."),
-        ("Full discharge test", "Starts the guided full-discharge test flow. The button reads Start when inactive and ON while armed or running."),
+        ("Calibration setup", "Starts the guided calibration flow. The button reads Start when inactive and ON while armed or running."),
         ("Light-theme foreground display", "Switches the foreground overlay background for better contrast on different app backgrounds."),
         ("Original capacity", "Stores the phone's rated battery capacity so the app can color capacity estimates relative to the original rating."),
         ("Monitor", "Starts or stops the normal monitoring service."),
@@ -233,7 +233,7 @@ def build_manual():
     add_placeholder(
         doc,
         "Startup screen",
-        "Insert a screenshot showing the startup page with Start monitoring, Full discharge test, foreground display reset, original capacity, and close X.",
+        "Insert a screenshot showing the startup page with Start monitoring, Calibration setup, foreground display reset, original capacity, and close X.",
     )
 
     add_placeholder(
@@ -253,8 +253,8 @@ def build_manual():
         ("Voltage", "Measured battery voltage from Android battery status data."),
         ("Energy / Charge", "Accumulated mWh or mAh since reset, depending on the selected unit."),
         ("Battery", "Battery state of charge as reported by Android."),
-        ("FD prefix", "Appears during a full-discharge test so the user knows the stricter test mode is active."),
-        ("Status dot", "A yellow dot means a capacity event is armed. A blinking green dot means a normal capacity event is recording. A blinking red dot means a full-discharge test is active."),
+        ("CAL prefix", "Appears during calibration so the user knows the stricter measurement mode is active."),
+        ("Status dot", "A yellow dot means a capacity event is armed. A blinking green dot means a normal capacity event is recording. A blinking red dot means calibration is active."),
     ])
 
     doc.add_heading("4. Graph Popup", level=1)
@@ -326,41 +326,41 @@ def build_manual():
     doc.add_heading("8. Battery Capacity Event Logging", level=1)
     doc.add_paragraph(
         "BatteryCurrent records qualifying charge and discharge sessions in the app private folder. Normal capacity estimates use completed sessions that span the useful 25% to 75% battery range. "
-        "These estimates are stored and used as trend data, but they play a secondary role once a full-discharge result exists."
+        "These estimates are stored and used as trend data, but they play a secondary role once a calibration result exists."
     )
     add_bullets(doc, [
         "A charge event starts near 25% and completes when it reaches 75%.",
         "A discharge event starts near 75% and completes when it reaches 25%.",
         "Plugging or unplugging during a qualifying session cancels that session and waits for the next threshold crossing.",
         "Daily capacity estimates are stored separately and updated only from completed qualifying events.",
-        "The chart capacity line shows the raw full-discharge capacity and an adjusted value when a full-discharge result exists.",
-        "If no full-discharge result exists yet, the chart falls back to showing the 25%-75% extrapolated estimate.",
+        "The chart capacity line shows the raw calibration capacity and an adjusted value when a calibration result exists.",
+        "If no calibration result exists yet, the chart falls back to showing the 25%-75% extrapolated estimate.",
     ])
 
-    doc.add_heading("9. Full Discharge Test", level=1)
+    doc.add_heading("9. Calibration Setup", level=1)
     doc.add_paragraph(
-        "The full-discharge test is the most accurate battery-capacity measurement mode. It is intended for occasional controlled testing, not daily use."
+        "Calibration is the most accurate battery-capacity measurement mode. It is intended for occasional controlled testing, not daily use, because deep discharge cycles add battery stress."
     )
     add_numbered(doc, [
-        "Charge the phone until Android reports 100% and the charging current has settled near 0 mA.",
-        "Open BatteryCurrent and tap Full discharge test.",
-        "Read the instructions, disconnect the charger, then press Reset in the dialog.",
-        "The startup page closes, the graph opens, and the graph/mAh reading resets to zero.",
-        "The actual full-discharge measurement starts about 10 seconds after Reset, allowing the phone to settle after unplugging.",
-        "Leave monitoring running until the phone discharges to 15%. The app then records the completed test.",
+        "Charge the phone until Android reports 100%.",
+        "Leave the phone connected for 20 minutes after it reaches 100%.",
+        "Open BatteryCurrent and tap Calibration setup.",
+        "After the 20 minute wait, disconnect the charger, then press Start in the dialog.",
+        "The startup page closes and the graph opens while calibration is armed.",
+        "The app resets the graph/mAh reading and starts measuring automatically when the phone reaches 95%.",
+        "Leave monitoring running until the phone discharges to 10%. The app then records the completed calibration.",
     ])
     add_bullets(doc, [
-        "If the charger is still connected when Reset is pressed, the app warns the user to disconnect it and does not start the test.",
-        "If the charger is connected, the service is stopped, or the measurement is interrupted, the test is stopped and no incomplete row is written.",
-        "Completed full-discharge rows are stored in battery_full_discharge_tests.csv with start and end times, discharged mAh, capacity estimate, average temperature, voltage, and current.",
-        "The full-discharge capacity estimate is calculated as discharged mAh divided by 0.85 because the test spans 100% to 15%.",
-        "The chart shows Full Discharge battery capacity [date]: raw mAh and Adj: adjusted mAh. The adjusted value uses the stored 25%-75% trend to nudge the raw full-discharge anchor until the next full-discharge test.",
+        "Calibration measures the 95% to 10% discharge range and computes capacity as discharged mAh divided by 0.85.",
+        "If the charger is connected after measurement begins, the service is stopped, or the measurement is interrupted, the calibration is stopped and no incomplete row is written.",
+        "Completed calibration rows are stored in battery_calibration_tests.csv with start and end times, discharged mAh, capacity estimate, average temperature, voltage, and current.",
+        "The chart shows Calibration battery capacity [date]: raw mAh and Adj: adjusted mAh. The adjusted value uses the stored 25%-75% trend to nudge the raw calibration anchor until the next calibration run.",
     ])
 
     add_placeholder(
         doc,
-        "Full discharge test dialog",
-        "Insert a screenshot showing the full-discharge instructions with Reset and Cancel buttons.",
+        "Calibration setup dialog",
+        "Insert a screenshot showing the calibration instructions with the 20 minute wait, disconnect reminder, Start button, and Cancel button.",
     )
 
     doc.add_heading("10. SOC Curve and Load Sensitivity", level=1)
@@ -368,7 +368,7 @@ def build_manual():
         "The SOC Curve view helps diagnose how linear the phone's reported battery percentage is compared with measured mAh use."
     )
     add_bullets(doc, [
-        "SOC bucket data is collected during normal discharge, including during a full-discharge test.",
+        "SOC bucket data is collected during normal discharge, including during calibration.",
         "The SOC curve plots individual bucket samples as dots and draws a piecewise linear line through the average for each bucket.",
         "Outlier points can reveal noisy battery-percentage reporting, load effects, or areas where the phone's fuel gauge is less linear.",
         "The load sensitivity line reports k with two decimals and a short comment such as k=1.00 (excellent), k=1.12 (mild), k=1.22 (noticeable), k=1.35 (high sag), or k>1.50 (check data).",
@@ -388,7 +388,7 @@ def build_manual():
     )
     add_bullets(doc, [
         "Graph history is capped to reduce storage growth.",
-        "Capacity event, full-discharge, SOC bucket, and moving-average files are stored as CSV files for later inspection.",
+        "Capacity event, calibration, SOC bucket, and moving-average files are stored as CSV files for later inspection.",
         "Private app data should survive normal in-place app updates, but uninstalling the app or installing with a mismatched signing key can remove the stored data.",
         "Deleting app data or uninstalling the app removes the stored history.",
     ])
@@ -399,8 +399,8 @@ def build_manual():
         ("Foreground display cannot move", "Use Reset foreground display to centre from the startup page, or open the graph popup and tap Unlock if the overlay is locked."),
         ("Graph looks crowded", "Use the X or Y zoom controls, pinch to zoom the selected axis, or collapse the menu buttons."),
         ("No capacity estimate yet", "The app needs completed qualifying charge or discharge sessions before daily estimates are available."),
-        ("No full-discharge result yet", "Run the guided full-discharge test from 100% down to 15%. Until then, the chart uses the 25%-75% estimate when available."),
-        ("Full-discharge test will not start", "Disconnect the charger and confirm the battery reads 100%, then press Reset in the full-discharge dialog."),
+        ("No calibration result yet", "Run the guided calibration from 95% down to 10%. Until then, the chart uses the 25%-75% estimate when available."),
+        ("Calibration will not start", "Charge to 100%, wait 20 minutes while still connected, disconnect the charger, then press Start in the calibration dialog. The app begins measuring automatically at 95%."),
         ("Monitor button looks stale", "The startup page checks the live service heartbeat. If Android killed the service, the button returns to Start/OFF when reopened."),
         ("App was stopped", "Restart BatteryCurrent from the launcher. If the service was fully stopped, it cannot measure the period while it was not running."),
     ])
