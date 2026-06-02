@@ -1617,7 +1617,7 @@ class BatteryCurrentService : Service() {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
                 addView(TextView(this@BatteryCurrentService).apply {
-                    text = "Last 10 days capacity estimates"
+                    text = "Recent capacity estimates"
                     textSize = 13f
                     setTypeface(typeface, Typeface.BOLD)
                     setTextColor(Color.WHITE)
@@ -1850,7 +1850,7 @@ class BatteryCurrentService : Service() {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
                 addView(TextView(this@BatteryCurrentService).apply {
-                    text = "SOC linearity deviation"
+                    text = "State of Charge (SOC) linearity deviation"
                     textSize = 13f
                     setTypeface(typeface, Typeface.BOLD)
                     setTextColor(Color.WHITE)
@@ -1882,7 +1882,7 @@ class BatteryCurrentService : Service() {
                 text = if (learnedSampleCount == 0) {
                     "No SOC bucket data yet. Data fills in as battery % changes while monitoring."
                 } else {
-                    String.format(Locale.US, "%d samples learned, max fitted deviation %.0f%%", learnedSampleCount, maxCurveDeviation * 100.0)
+                    String.format(Locale.US, "%d samples learnt, max fitted deviation %.0f%%", learnedSampleCount, maxCurveDeviation * 100.0)
                 }
                 textSize = 11f
                 setTextColor(graphEstimateLabelColor)

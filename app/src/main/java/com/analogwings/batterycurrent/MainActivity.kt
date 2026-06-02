@@ -320,7 +320,7 @@ private fun BatteryCurrentScreen(
 
         Spacer(modifier = Modifier.height(12.dp))
 
-        SettingRow(label = "Calibration setup") {
+        SettingRow(label = "Battery Calibration") {
             StartupActionButton(
                 text = if (fullDischargeModeEnabled) "ON" else "Start",
                 onClick = { showFullDischargeDialog = true },
@@ -344,7 +344,7 @@ private fun BatteryCurrentScreen(
         Spacer(modifier = Modifier.height(12.dp))
 
         SettingRow(
-            label = originalCapacityMah?.let { "Original capacity: ${it}mAh" } ?: "Original capacity not set"
+            label = originalCapacityMah?.let { "Battery capacity: ${it}mAh" } ?: "Battery capacity not set"
         ) {
             StartupActionButton(
                 text = "Edit",
@@ -354,7 +354,7 @@ private fun BatteryCurrentScreen(
 
         Spacer(modifier = Modifier.height(18.dp))
 
-            SettingRow(label = "Monitor") {
+            SettingRow(label = "Battery Monitor") {
                 StartupActionButton(
                     text = if (monitoringRunning) "ON" else "OFF",
                     onClick = onMonitorClick,
@@ -398,11 +398,11 @@ private fun FullDischargeTestDialog(
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Calibration setup") },
+        title = { Text("Battery Calibration") },
         text = {
             Column {
                 Text(
-                    text = "For calibration, press Start while the phone is charging. The app will wait for 100%, run a 5 minute top-off timer, then prompt you to disconnect the charger.",
+                    text = "For calibration, press Start while the phone is charging. The app will wait for 100% battery state, run a 5 minute top-off timer, then prompt you to disconnect the charger.",
                     style = MaterialTheme.typography.bodyMedium
                 )
                 Spacer(modifier = Modifier.height(8.dp))
