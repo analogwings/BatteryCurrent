@@ -343,15 +343,15 @@ def build_manual():
     )
     add_numbered(doc, [
         "Charge the phone until Android reports 100%.",
-        "Leave the phone connected for 10 minutes after it reaches 100%.",
+        "Leave the phone connected for 5 minutes after it reaches 100%.",
         "Open BatteryCurrent and tap Calibration setup.",
-        "After the 10 minute wait, disconnect the charger, then press Start in the dialog.",
+        "After the disconnect prompt, disconnect the charger.",
         "The startup page closes and the graph opens while calibration is armed.",
-        "The app resets the graph/mAh reading and starts measuring automatically when the phone reaches 95%.",
+        "The app resets the graph/mAh reading and starts measuring automatically when the phone reaches 99%.",
         "Leave monitoring running until the phone discharges to 10%. The app then records the completed calibration.",
     ])
     add_bullets(doc, [
-        "Calibration measures the 95% to 10% discharge range and computes capacity as discharged mAh divided by 0.85.",
+        "Calibration measures the 99% to 10% discharge range and computes capacity as discharged mAh divided by 0.89.",
         "If the charger is connected after measurement begins, the service is stopped, or the measurement is interrupted, the calibration is stopped and no incomplete row is written.",
         "Completed calibration rows are stored in battery_calibration_tests.csv with start and end times, discharged mAh, capacity estimate, average temperature, voltage, and current.",
         "The chart shows Calibration battery capacity [date]: raw mAh and Adj: adjusted mAh. The adjusted value uses the stored 25%-75% trend to nudge the raw calibration anchor until the next calibration run.",
@@ -360,7 +360,7 @@ def build_manual():
     add_placeholder(
         doc,
         "Calibration setup dialog",
-        "Insert a screenshot showing the calibration instructions with the 10 minute wait, disconnect reminder, Start button, and Cancel button.",
+        "Insert a screenshot showing the calibration instructions with the 5 minute wait, disconnect reminder, Start button, and Cancel button.",
     )
 
     doc.add_heading("10. SOC Curve and Load Sensitivity", level=1)
@@ -399,8 +399,8 @@ def build_manual():
         ("Foreground display cannot move", "Use Reset foreground display to centre from the startup page, or open the graph popup and tap Unlock if the overlay is locked."),
         ("Graph looks crowded", "Use the X or Y zoom controls, pinch to zoom the selected axis, or collapse the menu buttons."),
         ("No capacity estimate yet", "The app needs completed qualifying charge or discharge sessions before daily estimates are available."),
-        ("No calibration result yet", "Run the guided calibration from 95% down to 10%. Until then, the chart uses the 25%-75% estimate when available."),
-        ("Calibration will not start", "Charge to 100%, wait 10 minutes while still connected, disconnect the charger, then press Start in the calibration dialog. The app begins measuring automatically at 95%."),
+        ("No calibration result yet", "Run the guided calibration from 99% down to 10%. Until then, the chart uses the 25%-75% estimate when available."),
+        ("Calibration will not start", "Charge to 100%, wait for the 5 minute float timer, disconnect the charger when prompted, and let the app begin measuring automatically at 99%."),
         ("Monitor button looks stale", "The startup page checks the live service heartbeat. If Android killed the service, the button returns to Start/OFF when reopened."),
         ("App was stopped", "Restart BatteryCurrent from the launcher. If the service was fully stopped, it cannot measure the period while it was not running."),
     ])

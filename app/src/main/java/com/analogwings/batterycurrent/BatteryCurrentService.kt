@@ -588,7 +588,7 @@ class BatteryCurrentService : Service() {
         )) {
             FullDischargeTest.SampleResult.PENDING -> Unit
             FullDischargeTest.SampleResult.TOP_OFF_STARTED -> {
-                Toast.makeText(this, "Calibration top-off started: wait 10 minutes", Toast.LENGTH_LONG).show()
+                Toast.makeText(this, "Calibration top-off started: wait 5 minutes", Toast.LENGTH_LONG).show()
             }
             FullDischargeTest.SampleResult.READY_TO_DISCONNECT -> {
                 playCalibrationNoticeSound()
@@ -598,7 +598,7 @@ class BatteryCurrentService : Service() {
             FullDischargeTest.SampleResult.READY_TO_START -> {
                 resetMeasurementAndGraph()
                 FullDischargeTest.markMeasurementStarted(this, totalChargeMah = 0.0, nowMs = now)
-                Toast.makeText(this, "Calibration started at 95%", Toast.LENGTH_LONG).show()
+                Toast.makeText(this, "Calibration started at 99%", Toast.LENGTH_LONG).show()
             }
             FullDischargeTest.SampleResult.COMPLETED -> {
                 val result = FullDischargeTest.latestResult(this)
