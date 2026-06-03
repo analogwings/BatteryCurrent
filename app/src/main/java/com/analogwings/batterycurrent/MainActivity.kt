@@ -407,7 +407,7 @@ private fun FullDischargeTestDialog(
                 )
                 Spacer(modifier = Modifier.height(8.dp))
                 Text(
-                    text = "After the disconnect prompt, unplug within 10 minutes. The graph opens immediately, but measurement starts automatically when the phone falls to 99% and stops at 10%.",
+                    text = "After the disconnect prompt, unplug within 10 minutes. The graph opens immediately, but measurement starts automatically when the phone falls to 99% and stops at 15%.",
                     style = MaterialTheme.typography.bodyMedium
                 )
                 Spacer(modifier = Modifier.height(8.dp))

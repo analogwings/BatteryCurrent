@@ -39,9 +39,9 @@ object FullDischargeTest {
     private const val UNPLUGGED_AFTER_PROMPT_KEY = "unplugged_after_prompt"
     private const val FILE_NAME = "battery_calibration_tests.csv"
     private const val START_PERCENT = 99
-    private const val END_PERCENT = 10
+    private const val END_PERCENT = 15
     private const val FULL_PERCENT = 100
-    private const val CALIBRATION_SPAN_FRACTION = 0.89
+    private const val CALIBRATION_SPAN_FRACTION = 0.84
     private const val INTERRUPTION_STALE_MS = 45_000L
     private const val TOP_OFF_WAIT_MS = 5 * 60_000L
     private const val DISCONNECT_WAIT_MS = 10 * 60_000L
@@ -106,7 +106,7 @@ object FullDischargeTest {
         if (!isModeEnabled(context)) return null
         val prefs = prefs(context)
         return when {
-            prefs.getBoolean(ACTIVE_KEY, false) -> "Calibrating battery capacity: discharge to 10%."
+            prefs.getBoolean(ACTIVE_KEY, false) -> "Calibrating battery capacity: discharge to 15%."
             prefs.getBoolean(PENDING_START_KEY, false) -> pendingStatusText(prefs, nowMs)
             else -> "Calibration enabled."
         }
