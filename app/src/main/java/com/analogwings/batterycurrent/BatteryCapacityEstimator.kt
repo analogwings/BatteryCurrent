@@ -55,7 +55,8 @@ class BatteryCapacityEstimator(private val context: Context) {
         val deviationFromIdeal: Double,
         val learnedMah: Double,
         val idealMah: Double,
-        val sampleCount: Int
+        val sampleCount: Int,
+        val isFittedBucketAverage: Boolean = false
     )
 
     private data class SocBucketSample(
@@ -266,27 +267,34 @@ class BatteryCapacityEstimator(private val context: Context) {
     }
 
     fun socLinearityPoints(): List<SocLinearityPoint> {
-        readSocBucketSamples()
+        val learnedBuckets = socBucketLinearityPoints()
+        val idealMah = learnedBuckets
             .takeIf { it.isNotEmpty() }
+            ?.firstOrNull()
+            ?.idealMah
+
+        val displaySamples = readSocBucketSamples()
+            .takeIf { it.isNotEmpty() && idealMah != null && idealMah > 0.0 }
             ?.let { samples ->
-                val filteredSamples = filterSocLinearityOutliers(samples)
-                val displaySamples = filteredSamples.takeLast(MAX_SOC_LINEARITY_DISPLAY_SAMPLES)
-                val idealMah = displaySamples.map { it.learnedMah }.average()
-                if (idealMah <= 0.0) return emptyList()
-
-                return displaySamples.map { sample ->
-                    SocLinearityPoint(
-                        bucketStartPct = sample.bucketStartPct,
-                        bucketEndPct = sample.bucketEndPct,
-                        midpointPct = (sample.bucketStartPct + sample.bucketEndPct) / 2,
-                        deviationFromIdeal = (sample.learnedMah - idealMah) / idealMah,
-                        learnedMah = sample.learnedMah,
-                        idealMah = idealMah,
-                        sampleCount = 1
-                    )
-                }
+                filterSocLinearityOutliers(samples).takeLast(MAX_SOC_LINEARITY_DISPLAY_SAMPLES)
             }
+            ?.map { sample ->
+                SocLinearityPoint(
+                    bucketStartPct = sample.bucketStartPct,
+                    bucketEndPct = sample.bucketEndPct,
+                    midpointPct = (sample.bucketStartPct + sample.bucketEndPct) / 2,
+                    deviationFromIdeal = (sample.learnedMah - idealMah!!) / idealMah,
+                    learnedMah = sample.learnedMah,
+                    idealMah = idealMah,
+                    sampleCount = 1
+                )
+            }
+            ?: emptyList()
 
+        return learnedBuckets + displaySamples
+    }
+
+    private fun socBucketLinearityPoints(): List<SocLinearityPoint> {
         val learnedBuckets = socBucketSummaries()
             .filter { it.sampleCount > 0 && it.learnedMah != null && it.learnedMah > 0.0 }
             .sortedBy { it.bucketStartPct }
@@ -307,7 +315,8 @@ class BatteryCapacityEstimator(private val context: Context) {
                 deviationFromIdeal = (learnedMah - idealMah) / idealMah,
                 learnedMah = learnedMah,
                 idealMah = idealMah,
-                sampleCount = bucket.sampleCount
+                sampleCount = bucket.sampleCount,
+                isFittedBucketAverage = true
             )
         }
     }

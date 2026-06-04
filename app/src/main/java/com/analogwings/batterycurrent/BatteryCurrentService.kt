@@ -40,6 +40,7 @@ import android.widget.TextView
 import android.widget.Toast
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.app.NotificationCompat
+import java.io.File
 import java.util.ArrayDeque
 import java.util.ArrayList
 import java.text.SimpleDateFormat
@@ -63,6 +64,8 @@ class BatteryCurrentService : Service() {
         const val MONITOR_RUNNING_KEY = "monitor_running"
         const val MONITOR_LAST_HEARTBEAT_MS_KEY = "monitor_last_heartbeat_ms"
         const val MONITOR_HEARTBEAT_STALE_MS = 45_000L
+        @Volatile
+        private var crashLoggerInstalled = false
         @Volatile
         var isServiceAlive = false
             private set
@@ -161,15 +164,25 @@ class BatteryCurrentService : Service() {
 
     private val updateRunnable = object : Runnable {
         override fun run() {
-            updateCurrentDisplay()
-            scheduleNextUpdate()
+            try {
+                updateCurrentDisplay()
+            } catch (exception: Exception) {
+                logServiceIssue("update loop failed", exception)
+            } finally {
+                isUpdateScheduled = false
+                scheduleNextUpdate()
+            }
         }
     }
 
     private val graphBlinkRunnable = object : Runnable {
         override fun run() {
             if (graphOverlayView == null) return
-            updateGraphOverlay()
+            try {
+                updateGraphOverlay()
+            } catch (exception: Exception) {
+                logServiceIssue("graph refresh failed", exception)
+            }
             handler.postDelayed(this, GRAPH_BLINK_UPDATE_MS)
         }
     }
@@ -177,7 +190,11 @@ class BatteryCurrentService : Service() {
     private val foregroundIndicatorRunnable = object : Runnable {
         override fun run() {
             if (overlayView == null) return
-            refreshFloatingOverlayText()
+            try {
+                refreshFloatingOverlayText()
+            } catch (exception: Exception) {
+                logServiceIssue("foreground refresh failed", exception)
+            }
             handler.postDelayed(this, FOREGROUND_INDICATOR_UPDATE_MS)
         }
     }
@@ -186,6 +203,18 @@ class BatteryCurrentService : Service() {
         super.onCreate()
         isServiceAlive = true
         createNotificationChannel()
+        installCrashLogger()
+        logServiceIssue("service created", null)
+    }
+
+    private fun installCrashLogger() {
+        if (crashLoggerInstalled) return
+        val previousHandler = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
+            logServiceIssue("uncaught exception on ${thread.name}", throwable)
+            previousHandler?.uncaughtException(thread, throwable)
+        }
+        crashLoggerInstalled = true
     }
 
     private fun setMonitoringRunning(running: Boolean) {
@@ -271,6 +300,20 @@ class BatteryCurrentService : Service() {
         handler.postDelayed(updateRunnable, if (immediate) 0L else updateIntervalMs)
     }
 
+    private fun logServiceIssue(message: String, throwable: Throwable?) {
+        try {
+            val file = File(filesDir, "battery_current_debug_log.txt")
+            if (file.exists() && file.length() > 128_000L) {
+                file.writeText("")
+            }
+            val timestamp = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date())
+            val detail = throwable?.stackTraceToString()?.let { "\n$it" } ?: ""
+            file.appendText("$timestamp $message$detail\n")
+        } catch (_: Exception) {
+            // Logging must never become another reason for the service to stop.
+        }
+    }
+
     private fun updateCurrentDisplay() {
         isUpdateScheduled = false
         updateMonitorHeartbeat()
@@ -298,7 +341,8 @@ class BatteryCurrentService : Service() {
                 }
                 addSampleAndFormat(reading, temperatureC, voltageMv, batteryStatus)
             }
-        } catch (_: Exception) {
+        } catch (exception: Exception) {
+            logServiceIssue("sample update failed", exception)
             CurrentDisplay(SpannedString("Unavailable"))
         }
         lastDisplay = display
@@ -308,12 +352,20 @@ class BatteryCurrentService : Service() {
             background = pillBackground()
         }
 
-        updateGraphOverlay()
+        try {
+            updateGraphOverlay()
+        } catch (exception: Exception) {
+            logServiceIssue("graph update from sample failed", exception)
+        }
 
         val now = System.currentTimeMillis()
         if (now - lastNotificationUpdateMs >= notificationUpdateIntervalMs) {
             lastNotificationUpdateMs = now
-            notifySafely(buildFullLiveDisplayText(now))
+            try {
+                notifySafely(buildFullLiveDisplayText(now))
+            } catch (exception: Exception) {
+                logServiceIssue("notification update failed", exception)
+            }
         }
     }
 
@@ -1876,10 +1928,10 @@ class BatteryCurrentService : Service() {
                 430
             ))
 
-            val learnedSampleCount = points.size
+            val learnedSampleCount = points.count { !it.isFittedBucketAverage }
             val maxCurveDeviation = maxSocCurveDeviation(points)
             addView(TextView(this@BatteryCurrentService).apply {
-                text = if (learnedSampleCount == 0) {
+                text = if (points.isEmpty()) {
                     "No SOC bucket data yet. Data fills in as battery % changes while monitoring."
                 } else {
                     String.format(Locale.US, "%d samples learnt, max fitted deviation %.0f%%", learnedSampleCount, maxCurveDeviation * 100.0)
@@ -1903,17 +1955,8 @@ class BatteryCurrentService : Service() {
 
     private fun maxSocCurveDeviation(points: List<BatteryCapacityEstimator.SocLinearityPoint>): Double {
         return points
-            .groupBy { it.midpointPct }
-            .map { (_, bucketPoints) ->
-                val totalWeight = bucketPoints.sumOf { it.sampleCount.coerceAtLeast(1) }
-                if (totalWeight <= 0) {
-                    0.0
-                } else {
-                    bucketPoints.sumOf { point ->
-                        point.deviationFromIdeal * point.sampleCount.coerceAtLeast(1)
-                    } / totalWeight
-                }
-            }
+            .filter { it.isFittedBucketAverage }
+            .map { it.deviationFromIdeal }
             .maxOfOrNull { abs(it) } ?: 0.0
     }
 
@@ -2558,7 +2601,7 @@ class BatteryCurrentService : Service() {
                 return
             }
 
-            val plotted = points.map { point ->
+            val plottedSamples = points.filter { !it.isFittedBucketAverage }.map { point ->
                 val x = xForPct(point.midpointPct)
                 val y = yForDeviation(point.deviationFromIdeal, yLimit)
                 Triple(point, x, y)
@@ -2566,7 +2609,7 @@ class BatteryCurrentService : Service() {
 
             drawBucketAverageLine(canvas, yLimit)
 
-            plotted.forEach { (point, x, y) ->
+            plottedSamples.forEach { (point, x, y) ->
                 pointPaint.color = if (point.sampleCount >= 3) {
                     Color.WHITE
                 } else {
@@ -2581,14 +2624,8 @@ class BatteryCurrentService : Service() {
 
         private fun drawBucketAverageLine(canvas: Canvas, yLimit: Double) {
             val averagedPoints = points
-                .groupBy { it.midpointPct }
-                .map { (midpointPct, bucketPoints) ->
-                    val totalWeight = bucketPoints.sumOf { it.sampleCount.coerceAtLeast(1) }
-                    val weightedDeviation = bucketPoints.sumOf { point ->
-                        point.deviationFromIdeal * point.sampleCount.coerceAtLeast(1)
-                    } / totalWeight
-                    midpointPct to weightedDeviation
-                }
+                .filter { it.isFittedBucketAverage }
+                .map { it.midpointPct to it.deviationFromIdeal }
                 .sortedBy { it.first }
 
             if (averagedPoints.size < 2) return
