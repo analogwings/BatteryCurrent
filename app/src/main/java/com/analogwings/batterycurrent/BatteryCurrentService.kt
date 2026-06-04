@@ -207,6 +207,11 @@ class BatteryCurrentService : Service() {
         logServiceIssue("service created", null)
     }
 
+    override fun onTimeout(startId: Int, fgsType: Int) {
+        logServiceIssue("foreground service timeout; type=$fgsType", null)
+        stopMonitoring()
+    }
+
     private fun installCrashLogger() {
         if (crashLoggerInstalled) return
         val previousHandler = Thread.getDefaultUncaughtExceptionHandler()
