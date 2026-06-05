@@ -2161,7 +2161,7 @@ class BatteryCurrentService : Service() {
     private fun createResetButton(): Button {
         return Button(this).apply {
             styleGraphMenuButton(this, textColor = graphDischargeTextColor)
-            text = "Clr Data"
+            text = "ClrData"
             setOnClickListener {
                 val row = parent as? LinearLayout ?: return@setOnClickListener
                 showResetConfirmation(row, this)
@@ -2172,7 +2172,7 @@ class BatteryCurrentService : Service() {
     private fun createCapacityHistoryButton(): Button {
         return Button(this).apply {
             styleGraphMenuButton(this)
-            text = "25-75 Hist"
+            text = "Chrg Hist"
             setOnClickListener { showCapacityHistoryPopup() }
         }
     }
