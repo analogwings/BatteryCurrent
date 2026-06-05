@@ -275,8 +275,10 @@ class BatteryCurrentService : Service() {
             updateCurrentDisplay()
             createOverlayIfAllowed()
             if (intent?.action == ACTION_START_CALIBRATION_SETUP) {
-                when (FullDischargeTest.armCalibrationSetup(this)) {
-                    FullDischargeTest.StartResult.PENDING -> Toast.makeText(this, "Calibration armed: keep charger connected until prompted", Toast.LENGTH_LONG).show()
+                val startBatteryPercent = latestBatteryPercent ?: readBatteryPercent(readBatteryStatus())?.percent?.roundToInt()?.coerceIn(0, 100)
+                when (FullDischargeTest.armCalibrationSetup(this, batteryPercent = startBatteryPercent)) {
+                    FullDischargeTest.StartResult.PENDING -> Toast.makeText(this, "Calibration armed: waiting for 99%", Toast.LENGTH_LONG).show()
+                    FullDischargeTest.StartResult.NOT_FULL -> Toast.makeText(this, "Calibration requires battery at 100%", Toast.LENGTH_LONG).show()
                     FullDischargeTest.StartResult.MODE_DISABLED -> Unit
                 }
             }
@@ -644,14 +646,6 @@ class BatteryCurrentService : Service() {
             nowMs = now
         )) {
             FullDischargeTest.SampleResult.PENDING -> Unit
-            FullDischargeTest.SampleResult.TOP_OFF_STARTED -> {
-                Toast.makeText(this, "Calibration top-off started: wait 5 minutes", Toast.LENGTH_LONG).show()
-            }
-            FullDischargeTest.SampleResult.READY_TO_DISCONNECT -> {
-                playCalibrationNoticeSound()
-                Toast.makeText(this, "Calibration ready: disconnect charger within 10 minutes", Toast.LENGTH_LONG).show()
-            }
-            FullDischargeTest.SampleResult.WAITING_FOR_DISCONNECT -> Unit
             FullDischargeTest.SampleResult.READY_TO_START -> {
                 resetMeasurementAndGraph()
                 FullDischargeTest.markMeasurementStarted(this, totalChargeMah = 0.0, nowMs = now)
@@ -862,7 +856,6 @@ class BatteryCurrentService : Service() {
     private fun foregroundCapacityStatusDotColor(now: Long): Int? {
         return when {
             FullDischargeTest.isMeasurementActive(this) ||
-                FullDischargeTest.isWaitingForDisconnect(this) ||
                 FullDischargeTest.isPostDisconnectWaitingForStart(this) -> {
                 val showDot = ((now - graphOverlayCreatedAtMs.coerceAtLeast(sessionStartMs)) / CALIBRATION_DOT_BLINK_MS) % 2L == 0L
                 if (showDot) graphDischargeTextColor else Color.TRANSPARENT
@@ -1413,7 +1406,6 @@ class BatteryCurrentService : Service() {
         val dotView = titleRow?.getChildAt(0) as? TextView ?: return
         when {
             FullDischargeTest.isMeasurementActive(this) ||
-                FullDischargeTest.isWaitingForDisconnect(this) ||
                 FullDischargeTest.isPostDisconnectWaitingForStart(this) -> {
                 val showDot = ((now - graphOverlayCreatedAtMs) / CALIBRATION_DOT_BLINK_MS) % 2L == 0L
                 dotView.visibility = if (showDot) View.VISIBLE else View.INVISIBLE
@@ -1450,7 +1442,12 @@ class BatteryCurrentService : Service() {
                 isClickable = true
                 setOnClickListener {
                     if (ProFeatureGate.isProEnabled(this@BatteryCurrentService)) {
-                        showCapacityHistoryPopup()
+                        val result = FullDischargeTest.latestResult(this@BatteryCurrentService)
+                        if (result != null) {
+                            showCalibrationResultPopup(result)
+                        } else {
+                            showCapacityHistoryPopup()
+                        }
                     }
                 }
             })
@@ -1696,14 +1693,23 @@ class BatteryCurrentService : Service() {
                     setPadding(0, 14, 0, 4)
                 })
             } else {
-                rows.forEach { row ->
-                    addCapacityHistoryRow(
-                        dateFormat.format(Date(row.timestampMs)),
-                        row.averageCapacityMah.toString(),
-                        row.sampleCount.toString(),
-                        onClick = { showCapacityEventDetailsPopup(row.timestampMs) }
-                    )
-                }
+                addView(ScrollView(this@BatteryCurrentService).apply {
+                    isFillViewport = false
+                    addView(LinearLayout(this@BatteryCurrentService).apply {
+                        orientation = LinearLayout.VERTICAL
+                        rows.forEach { row ->
+                            addCapacityHistoryRow(
+                                dateFormat.format(Date(row.timestampMs)),
+                                row.averageCapacityMah.toString(),
+                                row.sampleCount.toString(),
+                                onClick = { showCapacityEventDetailsPopup(row.timestampMs) }
+                            )
+                        }
+                    })
+                }, LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    164
+                ))
             }
         }
 
@@ -2098,26 +2104,18 @@ class BatteryCurrentService : Service() {
                     text = "Stop"
                     setOnClickListener { stopMonitoring() }
                 })
-            })
-
-            addView(LinearLayout(this@BatteryCurrentService).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER
 
                 addView(createLockToggleButton())
-                addView(createEnergyUnitToggleButton())
-                addView(createResetButton())
             })
 
             addView(LinearLayout(this@BatteryCurrentService).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER
 
-                addView(Button(this@BatteryCurrentService).apply {
-                    styleGraphMenuButton(this)
-                    text = "SOC Lin"
-                    setOnClickListener { showSocCurvePopup() }
-                })
+                addView(createEnergyUnitToggleButton())
+                addView(createResetButton())
+                addView(createCapacityHistoryButton())
+                addView(createSocCurveButton())
             })
         }
     }
@@ -2163,11 +2161,27 @@ class BatteryCurrentService : Service() {
     private fun createResetButton(): Button {
         return Button(this).apply {
             styleGraphMenuButton(this, textColor = graphDischargeTextColor)
-            text = "Clear Data"
+            text = "Clr Data"
             setOnClickListener {
                 val row = parent as? LinearLayout ?: return@setOnClickListener
                 showResetConfirmation(row, this)
             }
+        }
+    }
+
+    private fun createCapacityHistoryButton(): Button {
+        return Button(this).apply {
+            styleGraphMenuButton(this)
+            text = "25-75 Hist"
+            setOnClickListener { showCapacityHistoryPopup() }
+        }
+    }
+
+    private fun createSocCurveButton(): Button {
+        return Button(this).apply {
+            styleGraphMenuButton(this)
+            text = "SOC Lin"
+            setOnClickListener { showSocCurvePopup() }
         }
     }
 
@@ -2204,9 +2218,10 @@ class BatteryCurrentService : Service() {
 
     private fun restoreSecondaryActionRow(row: LinearLayout) {
         row.removeAllViews()
-        row.addView(createLockToggleButton())
         row.addView(createEnergyUnitToggleButton())
         row.addView(createResetButton())
+        row.addView(createCapacityHistoryButton())
+        row.addView(createSocCurveButton())
     }
 
     private fun createDisplayToggleRow(vararg toggles: Pair<String, String>): LinearLayout {

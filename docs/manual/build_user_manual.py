@@ -267,10 +267,11 @@ def build_manual():
         ("Stop", "Stops monitoring. Use this when you want to fully stop the app."),
         ("Lock / Unlock", "Locks or unlocks the foreground display position."),
         ("mAh / mWh", "Switches the main graph and accumulated readout between charge and energy."),
-        ("Reset", "Resets the accumulated mAh or mWh value to zero and starts a new graph timeline."),
+        ("Clr Data", "Opens a confirmation prompt to reset the accumulated mAh or mWh value to zero and start a new graph timeline."),
+        ("25-75 Hist", "Opens the recent 25%-75% capacity-estimate history. Tap a day in the table to view the events behind that daily value."),
         ("degrees button", "Switches temperature display between degrees C and degrees F."),
         ("Display toggles", "Turn individual foreground-display fields on or off. The notification keeps showing the full live value set."),
-        ("SOC Curve", "Opens the learned state-of-charge linearity view."),
+        ("SOC Lin", "Opens the learned state-of-charge linearity view."),
         ("Collapse arrow", "Collapses or expands the menu buttons so the user can leave only the graph visible."),
     ])
 
@@ -333,7 +334,8 @@ def build_manual():
         "A discharge event starts near 75% and completes when it reaches 25%.",
         "Plugging or unplugging during a qualifying session cancels that session and waits for the next threshold crossing.",
         "Daily capacity estimates are stored separately and updated only from completed qualifying events.",
-        "The chart capacity line shows the raw calibration capacity and an adjusted value when a calibration result exists.",
+        "When a calibration result exists, the chart capacity line shows both the fixed calibration value and an adjusted value that reflects later trend movement.",
+        "Tap the 25-75 Hist button to review recent daily values. The list shows the most recent entries first and can be scrolled for older entries.",
         "If no calibration result exists yet, the chart falls back to showing the 25%-75% extrapolated estimate.",
     ])
 
@@ -343,9 +345,9 @@ def build_manual():
     )
     add_numbered(doc, [
         "Charge the phone until Android reports 100%.",
-        "Leave the phone connected for 5 minutes after it reaches 100%.",
-        "Open BatteryCurrent and tap Calibration setup.",
-        "After the disconnect prompt, disconnect the charger.",
+        "Leave the phone connected long enough to fully top off.",
+        "Open BatteryCurrent and tap Calibration setup, then press Start while Android still reports 100%.",
+        "Disconnect the charger after Start.",
         "The startup page closes and the graph opens while calibration is armed.",
         "The app resets the graph/mAh reading and starts measuring automatically when the phone reaches 99%.",
         "Leave monitoring running until the phone discharges to 15%. The app then records the completed calibration.",
@@ -354,13 +356,14 @@ def build_manual():
         "Calibration measures the 99% to 15% discharge range and computes capacity as discharged mAh divided by 0.84.",
         "If the charger is connected after measurement begins, the service is stopped, or the measurement is interrupted, the calibration is stopped and no incomplete row is written.",
         "Completed calibration rows are stored in battery_calibration_tests.csv with start and end times, discharged mAh, capacity estimate, average temperature, voltage, and current.",
-        "The chart shows Calibration battery capacity [date]: raw mAh and Adj: adjusted mAh. The adjusted value uses the stored 25%-75% trend to nudge the raw calibration anchor until the next calibration run.",
+        "The chart shows Calibration battery capacity [date]: raw mAh and Adj: adjusted mAh. The raw value is the fixed result from the last controlled calibration. The adjusted value is a trend-aware estimate that moves gradually as later everyday-use measurements indicate capacity drifting up or down.",
+        "Tap the calibration capacity line in the chart to open a compact table of the latest calibration result.",
     ])
 
     add_placeholder(
         doc,
         "Calibration setup dialog",
-        "Insert a screenshot showing the calibration instructions with the 5 minute wait, disconnect reminder, Start button, and Cancel button.",
+        "Insert a screenshot showing the calibration instructions with the 100% requirement, disconnect reminder, Start button, and Cancel button.",
     )
 
     doc.add_heading("10. SOC Curve and Load Sensitivity", level=1)
@@ -400,7 +403,7 @@ def build_manual():
         ("Graph looks crowded", "Use the X or Y zoom controls, pinch to zoom the selected axis, or collapse the menu buttons."),
         ("No capacity estimate yet", "The app needs completed qualifying charge or discharge sessions before daily estimates are available."),
         ("No calibration result yet", "Run the guided calibration from 99% down to 15%. Until then, the chart uses the 25%-75% estimate when available."),
-        ("Calibration will not start", "Charge to 100%, wait for the 5 minute float timer, disconnect the charger when prompted, and let the app begin measuring automatically at 99%."),
+        ("Calibration will not start", "Start only arms calibration when Android reports 100%. Charge fully, press Start while the battery still reads 100%, then disconnect the charger. The app begins measuring automatically at 99%."),
         ("Monitor button looks stale", "The startup page checks the live service heartbeat. If Android killed the service, the button returns to Start/OFF when reopened."),
         ("App was stopped", "Restart BatteryCurrent from the launcher. If the service was fully stopped, it cannot measure the period while it was not running."),
     ])

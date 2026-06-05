@@ -68,8 +68,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        monitoringRunningState.value = isMonitoringRunning()
-        fullDischargeModeState.value = FullDischargeTest.isModeEnabled(this)
+        refreshStartupState()
 
         setContent {
             BatteryCurrentTheme {
@@ -118,8 +117,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
-        monitoringRunningState.value = isMonitoringRunning()
-        fullDischargeModeState.value = FullDischargeTest.isModeEnabled(this)
+        refreshStartupState()
         if (waitingForOverlayPermission && overlayPermissionGranted()) {
             waitingForOverlayPermission = false
             startBatteryServiceAndHideActivity(action = pendingStartAction)
@@ -187,6 +185,8 @@ class MainActivity : ComponentActivity() {
             startService(intent)
         }
         monitoringRunningState.value = false
+        FullDischargeTest.setModeEnabled(this, false)
+        fullDischargeModeState.value = false
     }
 
     private fun isMonitoringRunning(): Boolean {
@@ -205,6 +205,18 @@ class MainActivity : ComponentActivity() {
                 .apply()
         }
         return serviceLooksAlive
+    }
+
+    private fun refreshStartupState() {
+        val monitoringRunning = isMonitoringRunning()
+        val calibrationLaunchPending = waitingForOverlayPermission ||
+            pendingStartAction == BatteryCurrentService.ACTION_START_CALIBRATION_SETUP
+        monitoringRunningState.value = monitoringRunning
+        if (!monitoringRunning && !calibrationLaunchPending) {
+            FullDischargeTest.setModeEnabled(this, false)
+        }
+        fullDischargeModeState.value = FullDischargeTest.isModeEnabled(this) &&
+            (monitoringRunning || calibrationLaunchPending)
     }
 
     private fun resetForegroundOverlayPosition() {
@@ -402,17 +414,17 @@ private fun FullDischargeTestDialog(
         text = {
             Column {
                 Text(
-                    text = "For calibration, press Start while the phone is charging. The app will wait for 100% battery state, run a 5 minute top-off timer, then prompt you to disconnect the charger.",
+                    text = "For calibration, charge the phone to 100%, leave it connected long enough to fully top off, then press Start while Android still reports 100%.",
                     style = MaterialTheme.typography.bodyMedium
                 )
                 Spacer(modifier = Modifier.height(8.dp))
                 Text(
-                    text = "After the disconnect prompt, unplug within 10 minutes. The graph opens immediately, but measurement starts automatically when the phone falls to 99% and stops at 15%.",
+                    text = "Start has no effect unless the battery state reads 100%. After Start, disconnect the charger; measurement starts automatically when the phone falls to 99% and stops at 15%.",
                     style = MaterialTheme.typography.bodyMedium
                 )
                 Spacer(modifier = Modifier.height(8.dp))
                 Text(
-                    text = "If charging is interrupted before the prompt, the phone powers off, the app is stopped, or a charger is connected during discharge, the incomplete calibration is discarded.",
+                    text = "If the phone powers off, the app is stopped, or a charger is connected during calibration, the incomplete calibration is discarded.",
                     style = MaterialTheme.typography.bodySmall
                 )
             }
