@@ -2563,7 +2563,7 @@ class BatteryCurrentService : Service() {
             strokeWidth = 1f
         }
         private val curvePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.rgb(95, 180, 255)
+            color = Color.rgb(170, 245, 150)
             style = Paint.Style.STROKE
             strokeWidth = 5f
         }
@@ -2768,7 +2768,7 @@ class BatteryCurrentService : Service() {
             strokeJoin = Paint.Join.ROUND
         }
         private val batteryLinePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.rgb(80, 165, 255)
+            color = Color.rgb(170, 245, 150)
             style = Paint.Style.STROKE
             strokeWidth = 4f
             strokeCap = Paint.Cap.ROUND
@@ -3461,9 +3461,9 @@ class BatteryCurrentService : Service() {
 
         private fun rightAxisTraceColor(value: Double): Int {
             return if (rightAxisMode == RightAxisMode.CURRENT) {
-                if (value >= 0.0) Color.rgb(80, 165, 255) else Color.rgb(255, 230, 65)
+                if (value >= 0.0) Color.rgb(170, 245, 150) else Color.rgb(255, 165, 55)
             } else {
-                Color.rgb(80, 165, 255)
+                Color.rgb(170, 245, 150)
             }
         }
 

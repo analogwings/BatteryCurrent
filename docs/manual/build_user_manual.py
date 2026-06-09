@@ -296,7 +296,7 @@ def build_manual():
     add_bullets(doc, [
         "Tap the grey right-axis label to cycle through Batt %, Temp, Volt, and mA.",
         "Battery percent, voltage, temperature, and current auto-scale for the visible data. Battery percent can extend above 100% only when manually zoomed.",
-        "For mA mode, positive current is blue and negative current is yellow, with a dashed zero-current reference line.",
+        "For mA mode, positive current is light green and negative current is orange, with a dashed zero-current reference line.",
         "When zoomed out, voltage, temperature, and current traces are smoothed for readability without changing the stored data.",
         "When Batt % is selected, faint reference lines mark the 25% and 75% capacity-event thresholds.",
     ])
