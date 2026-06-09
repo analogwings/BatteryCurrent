@@ -226,7 +226,7 @@ def build_manual():
         ("Reset foreground display", "Moves the floating display back to the center if it was dragged to an unreachable edge."),
         ("Calibration setup", "Starts the guided calibration flow. The button reads Start when inactive and ON while armed or running."),
         ("Light-theme foreground display", "Switches the foreground overlay and chart popups to a light beige theme with higher-contrast graph, table, button, and text colors."),
-        ("Reset graph at 25% / 75%", "Automatically starts a fresh graph segment when battery state crosses 25% or 75%. This reset affects the graph display baseline, not the stored capacity history."),
+        ("Reset graph at 25% / 75%", "Automatically starts a fresh graph segment when charging crosses up through 25% or discharging crosses down through 75%. This reset affects the graph display baseline, not the stored capacity history."),
         ("Original capacity", "Stores the phone's rated battery capacity so the app can color capacity estimates relative to the original rating."),
         ("Monitor", "Starts or stops the normal monitoring service."),
     ])

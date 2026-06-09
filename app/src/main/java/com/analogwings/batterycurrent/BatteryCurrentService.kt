@@ -692,7 +692,7 @@ class BatteryCurrentService : Service() {
             temperatureC = temperatureC,
             voltageMv = voltageMv
         )
-        resetGraphDisplayOnCapacityThresholdCrossing(now)
+        resetGraphDisplayOnCapacityThresholdCrossing(now, averageMilliAmps, pluggedIn)
         when (FullDischargeTest.processSample(
             context = this,
             batteryPercent = latestBatteryPercent,
@@ -721,7 +721,11 @@ class BatteryCurrentService : Service() {
         persistEnergyTracking()
     }
 
-    private fun resetGraphDisplayOnCapacityThresholdCrossing(now: Long) {
+    private fun resetGraphDisplayOnCapacityThresholdCrossing(
+        now: Long,
+        averageMilliAmps: Double,
+        pluggedIn: Boolean
+    ) {
         val currentPercent = latestBatteryPercent ?: return
         val previousPercent = lastAutoResetBatteryPercent
         lastAutoResetBatteryPercent = currentPercent
@@ -730,10 +734,11 @@ class BatteryCurrentService : Service() {
         if (FullDischargeTest.isModeEnabled(this) || FullDischargeTest.isActive(this)) return
         if (previousPercent == null) return
 
-        val crossedThreshold = listOf(25, 75).any { threshold ->
-            (previousPercent < threshold && currentPercent >= threshold) ||
-                (previousPercent > threshold && currentPercent <= threshold)
-        }
+        val charging = averageMilliAmps > 20.0 || pluggedIn
+        val discharging = averageMilliAmps < -20.0 || !pluggedIn
+        val crossedChargeStart = charging && previousPercent < 25 && currentPercent >= 25
+        val crossedDischargeStart = discharging && previousPercent > 75 && currentPercent <= 75
+        val crossedThreshold = crossedChargeStart || crossedDischargeStart
         if (!crossedThreshold) return
 
         resetGraphDisplayBaseline(now)
@@ -776,10 +781,18 @@ class BatteryCurrentService : Service() {
 
     private fun formatSelectedEnergy(): String {
         return if (isChargeUnitSelected()) {
-            formatSignedCharge(totalNetChargeMilliAmpHours)
+            formatSignedCharge(displayRelativeChargeMilliAmpHours())
         } else {
-            formatSignedEnergyValue(totalNetEnergyMilliWattHours)
+            formatSignedEnergyValue(displayRelativeEnergyMilliWattHours())
         }
+    }
+
+    private fun displayRelativeChargeMilliAmpHours(): Double {
+        return totalNetChargeMilliAmpHours - graphDisplayZeroChargeMilliAmpHours
+    }
+
+    private fun displayRelativeEnergyMilliWattHours(): Double {
+        return totalNetEnergyMilliWattHours - graphDisplayZeroEnergyMilliWattHours
     }
 
     private fun formatSignedEnergyValue(energyMilliWattHours: Double): String {
@@ -949,11 +962,19 @@ class BatteryCurrentService : Service() {
             FullDischargeTest.isModeEnabled(this) -> graphDischargeTextColor
             capacityDisplayState.isEventActive -> {
                 val showDot = ((now - graphOverlayCreatedAtMs.coerceAtLeast(sessionStartMs)) / CALIBRATION_DOT_BLINK_MS) % 2L == 0L
-                if (showDot) graphCoolTextColor else Color.TRANSPARENT
+                if (showDot) capacityActiveDotColor() else Color.TRANSPARENT
             }
-            capacityDisplayState.isEventArmed -> Color.rgb(255, 220, 35)
+            capacityDisplayState.isEventArmed -> capacityArmedDotColor()
             else -> null
         }
+    }
+
+    private fun capacityActiveDotColor(): Int {
+        return if (isLightOverlayEnabled()) lightGraphAccentColor else graphCoolTextColor
+    }
+
+    private fun capacityArmedDotColor(): Int {
+        return if (isLightOverlayEnabled()) lightGraphEstimateLabelColor else Color.rgb(255, 220, 35)
     }
 
     private fun buildFullLiveDisplayText(now: Long): String {
@@ -1002,12 +1023,10 @@ class BatteryCurrentService : Service() {
     }
 
     private fun formatSelectedGraphEnergy(): String {
-        val relativeCharge = totalNetChargeMilliAmpHours - graphDisplayZeroChargeMilliAmpHours
-        val relativeEnergy = totalNetEnergyMilliWattHours - graphDisplayZeroEnergyMilliWattHours
         return if (isChargeUnitSelected()) {
-            formatSignedCharge(relativeCharge)
+            formatSignedCharge(displayRelativeChargeMilliAmpHours())
         } else {
-            formatSignedEnergyValue(relativeEnergy)
+            formatSignedEnergyValue(displayRelativeEnergyMilliWattHours())
         }
     }
 
@@ -1590,11 +1609,11 @@ class BatteryCurrentService : Service() {
             capacityDisplayState.isEventActive -> {
                 val showDot = ((now - graphOverlayCreatedAtMs) / CALIBRATION_DOT_BLINK_MS) % 2L == 0L
                 dotView.visibility = if (showDot) View.VISIBLE else View.INVISIBLE
-                dotView.setTextColor(graphCoolTextColor)
+                dotView.setTextColor(capacityActiveDotColor())
             }
             capacityDisplayState.isEventArmed -> {
                 dotView.visibility = View.VISIBLE
-                dotView.setTextColor(Color.rgb(255, 220, 35))
+                dotView.setTextColor(capacityArmedDotColor())
             }
             else -> {
                 dotView.visibility = View.GONE
