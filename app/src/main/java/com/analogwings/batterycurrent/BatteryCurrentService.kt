@@ -141,6 +141,49 @@ class BatteryCurrentService : Service() {
     private val graphCoolTextColor = Color.rgb(95, 220, 135)
     private val graphEstimateLabelColor = Color.rgb(245, 225, 170)
     private val graphBackgroundColor = Color.argb(242, 24, 26, 33)
+    private val lightGraphTextColor = Color.rgb(33, 38, 44)
+    private val lightGraphMutedTextColor = Color.rgb(82, 88, 96)
+    private val lightGraphBackgroundColor = Color.argb(244, 238, 229, 208)
+    private val lightGraphButtonBackgroundColor = Color.rgb(252, 248, 235)
+    private val lightGraphButtonTextColor = Color.rgb(45, 61, 50)
+    private val lightGraphAccentColor = Color.rgb(38, 135, 82)
+    private val lightGraphDischargeColor = Color.rgb(190, 45, 45)
+    private val lightGraphWarningColor = Color.rgb(185, 105, 0)
+    private val lightGraphEstimateLabelColor = Color.rgb(116, 86, 30)
+
+    private data class GraphPalette(
+        val isLight: Boolean,
+        val background: Int,
+        val text: Int,
+        val mutedText: Int,
+        val axis: Int,
+        val grid: Int,
+        val tick: Int,
+        val minorTick: Int,
+        val zeroLine: Int,
+        val fill: Int,
+        val buttonBackground: Int,
+        val buttonText: Int,
+        val closeBackground: Int,
+        val closeBorder: Int,
+        val closeText: Int,
+        val labelBackground: Int,
+        val resetZoomBackground: Int,
+        val resetZoomText: Int,
+        val zoomInactiveBackground: Int,
+        val zoomInactiveText: Int,
+        val zoomActiveBackground: Int,
+        val zoomActiveText: Int,
+        val estimateLabel: Int,
+        val charge: Int,
+        val discharge: Int,
+        val warm: Int,
+        val cool: Int,
+        val rightAxisPositive: Int,
+        val rightAxisNegative: Int,
+        val thresholdLow: Int,
+        val thresholdHigh: Int
+    )
 
     private val energyHistory = ArrayList<EnergyPoint>()
     private var sessionStartMs = 0L
@@ -1056,6 +1099,86 @@ class BatteryCurrentService : Service() {
         return OverlayThemePreference.isLightBackgroundEnabled(this)
     }
 
+    private fun graphPalette(): GraphPalette {
+        return if (isLightOverlayEnabled()) {
+            GraphPalette(
+                isLight = true,
+                background = lightGraphBackgroundColor,
+                text = lightGraphTextColor,
+                mutedText = lightGraphMutedTextColor,
+                axis = Color.rgb(42, 47, 54),
+                grid = Color.argb(90, 45, 50, 58),
+                tick = Color.argb(190, 45, 50, 58),
+                minorTick = Color.argb(150, 45, 50, 58),
+                zeroLine = Color.argb(170, 45, 50, 58),
+                fill = Color.argb(34, 55, 80, 65),
+                buttonBackground = lightGraphButtonBackgroundColor,
+                buttonText = lightGraphButtonTextColor,
+                closeBackground = Color.argb(42, 35, 40, 46),
+                closeBorder = Color.argb(210, 35, 40, 46),
+                closeText = lightGraphTextColor,
+                labelBackground = Color.argb(160, 210, 201, 182),
+                resetZoomBackground = Color.argb(235, 255, 251, 236),
+                resetZoomText = lightGraphTextColor,
+                zoomInactiveBackground = Color.argb(205, 105, 111, 118),
+                zoomInactiveText = Color.WHITE,
+                zoomActiveBackground = Color.rgb(238, 185, 44),
+                zoomActiveText = Color.rgb(42, 32, 0),
+                estimateLabel = lightGraphEstimateLabelColor,
+                charge = lightGraphAccentColor,
+                discharge = lightGraphDischargeColor,
+                warm = lightGraphWarningColor,
+                cool = lightGraphAccentColor,
+                rightAxisPositive = Color.rgb(36, 125, 78),
+                rightAxisNegative = Color.rgb(214, 100, 12),
+                thresholdLow = Color.argb(130, 190, 45, 45),
+                thresholdHigh = Color.argb(130, 38, 135, 82)
+            )
+        } else {
+            GraphPalette(
+                isLight = false,
+                background = graphBackgroundColor,
+                text = Color.WHITE,
+                mutedText = Color.argb(220, 255, 255, 255),
+                axis = Color.WHITE,
+                grid = Color.argb(80, 255, 255, 255),
+                tick = Color.argb(185, 255, 255, 255),
+                minorTick = Color.argb(170, 255, 255, 255),
+                zeroLine = Color.argb(160, 255, 255, 255),
+                fill = Color.argb(22, 255, 255, 255),
+                buttonBackground = Color.WHITE,
+                buttonText = Color.rgb(70, 25, 10),
+                closeBackground = Color.argb(20, 255, 255, 255),
+                closeBorder = Color.argb(190, 255, 255, 255),
+                closeText = Color.WHITE,
+                labelBackground = Color.argb(135, 110, 115, 125),
+                resetZoomBackground = Color.argb(230, 245, 248, 244),
+                resetZoomText = Color.rgb(70, 38, 28),
+                zoomInactiveBackground = Color.argb(220, 70, 76, 88),
+                zoomInactiveText = Color.WHITE,
+                zoomActiveBackground = Color.argb(235, 255, 215, 35),
+                zoomActiveText = Color.rgb(45, 38, 0),
+                estimateLabel = graphEstimateLabelColor,
+                charge = graphChargeTextColor,
+                discharge = graphDischargeTextColor,
+                warm = graphWarmTextColor,
+                cool = graphCoolTextColor,
+                rightAxisPositive = Color.rgb(170, 245, 150),
+                rightAxisNegative = Color.rgb(255, 165, 55),
+                thresholdLow = Color.argb(105, 230, 95, 95),
+                thresholdHigh = Color.argb(105, 82, 190, 128)
+            )
+        }
+    }
+
+    private fun graphPopupBackground(palette: GraphPalette = graphPalette(), cornerRadius: Float = 18f): GradientDrawable {
+        return GradientDrawable().apply {
+            this.cornerRadius = cornerRadius
+            setColor(palette.background)
+            setStroke(2, palette.closeBorder)
+        }
+    }
+
     private fun pillBackground(): GradientDrawable {
         val light = isLightOverlayEnabled()
         return GradientDrawable().apply {
@@ -1186,13 +1309,14 @@ class BatteryCurrentService : Service() {
         val manager = windowManager ?: (getSystemService(Context.WINDOW_SERVICE) as WindowManager).also {
             windowManager = it
         }
+        val palette = graphPalette()
 
         val summaryView = TextView(this).apply {
-            setTextColor(Color.WHITE)
+            setTextColor(palette.text)
             textSize = 14f
         }
 
-        val graphView = EnergyGraphView(this).apply {
+        val graphView = EnergyGraphView(this, palette).apply {
             onRightAxisLabelClick = { cycleRightAxisMode() }
             onViewportChanged = { updateGraphZoomResetButton() }
             onSingleFingerDragDelta = { dx, dy ->
@@ -1209,7 +1333,7 @@ class BatteryCurrentService : Service() {
             orientation = LinearLayout.VERTICAL
             background = GradientDrawable().apply {
                 cornerRadius = 28f
-                setColor(graphBackgroundColor)
+                setColor(palette.background)
             }
             setPadding(28, 24, 28, 24)
             elevation = 20f
@@ -1286,11 +1410,11 @@ class BatteryCurrentService : Service() {
                     text = ProFeatureGate.appTitle(this@BatteryCurrentService)
                     textSize = 17f
                     setTypeface(typeface, Typeface.BOLD)
-                    setTextColor(Color.WHITE)
+                    setTextColor(palette.text)
                 }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
 
                 addView(Button(this@BatteryCurrentService).apply {
-                    styleCloseButton(this)
+                    styleCloseButton(this, palette)
                     text = "x"
                     setOnClickListener { removeGraphOverlay() }
                 })
@@ -1304,7 +1428,7 @@ class BatteryCurrentService : Service() {
             addView(TextView(this@BatteryCurrentService).apply {
                 textSize = 11f
                 setTypeface(typeface, Typeface.BOLD)
-                setTextColor(graphEstimateLabelColor)
+                setTextColor(palette.estimateLabel)
                 gravity = Gravity.CENTER
                 visibility = View.GONE
                 setPadding(0, 0, 0, 10)
@@ -1327,7 +1451,7 @@ class BatteryCurrentService : Service() {
             addView(TextView(this@BatteryCurrentService).apply {
                 text = ProFeatureGate.displayVersion(this@BatteryCurrentService)
                 textSize = 10f
-                setTextColor(Color.argb(150, 255, 255, 255))
+                setTextColor(palette.mutedText)
                 gravity = Gravity.END
                 setPadding(0, 2, 8, 0)
             }, LinearLayout.LayoutParams(
@@ -1548,6 +1672,7 @@ class BatteryCurrentService : Service() {
 
         val warningText = capacityDisplayState.warningText
         if (warningText != null) {
+            warningView?.setTextColor(graphPalette().warm)
             warningView?.text = warningText
             warningRow?.visibility = View.VISIBLE
         } else {
@@ -1556,6 +1681,7 @@ class BatteryCurrentService : Service() {
     }
 
     private fun buildCapacityEstimateText(estimateMah: Int?): SpannableString {
+        val palette = graphPalette()
         val capacityLine = buildPrimaryCapacityLine(estimateMah)
         val peukertLabel = "\nBatt. capacity load senstvty: "
         val peukertValue = latestPeukertConstant()
@@ -1566,16 +1692,16 @@ class BatteryCurrentService : Service() {
         val peukertValueStart = peukertLabelStart + peukertLabel.length
 
         return SpannableString(fullText).apply {
-            setSpan(ForegroundColorSpan(graphEstimateLabelColor), 0, capacityLine.valueStart, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+            setSpan(ForegroundColorSpan(palette.estimateLabel), 0, capacityLine.valueStart, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
             setSpan(ForegroundColorSpan(capacityLine.valueColor), capacityLine.valueStart, capacityLine.text.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
             setSpan(
-                ForegroundColorSpan(graphEstimateLabelColor),
+                ForegroundColorSpan(palette.estimateLabel),
                 peukertLabelStart,
                 peukertValueStart,
                 Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
             )
             setSpan(
-                ForegroundColorSpan(graphCoolTextColor),
+                ForegroundColorSpan(palette.cool),
                 peukertValueStart,
                 fullText.length,
                 Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
@@ -1590,6 +1716,7 @@ class BatteryCurrentService : Service() {
     )
 
     private fun buildPrimaryCapacityLine(estimateMah: Int?): CapacityLine {
+        val palette = graphPalette()
         val fdResult = FullDischargeTest.latestResult(this)
         if (fdResult != null) {
             val label = "Calibration battery capacity [${fdResult.startTimestampText}]: "
@@ -1608,7 +1735,7 @@ class BatteryCurrentService : Service() {
         return CapacityLine(
             text = label + value,
             valueStart = label.length,
-            valueColor = estimateMah?.let { capacityEstimateColor(it) } ?: graphCoolTextColor
+            valueColor = estimateMah?.let { capacityEstimateColor(it) } ?: palette.cool
         )
     }
 
@@ -1678,15 +1805,16 @@ class BatteryCurrentService : Service() {
     }
 
     private fun capacityEstimateColor(estimateMah: Int): Int {
-        val originalMah = BatteryCapacityReference.originalCapacityMah(this) ?: return graphCoolTextColor
-        if (originalMah <= 0) return graphCoolTextColor
+        val palette = graphPalette()
+        val originalMah = BatteryCapacityReference.originalCapacityMah(this) ?: return palette.cool
+        if (originalMah <= 0) return palette.cool
 
         val reductionPercent = ((originalMah - estimateMah).coerceAtLeast(0) * 100.0) / originalMah
         return when {
-            reductionPercent > 30.0 -> graphDischargeTextColor
-            reductionPercent > 20.0 -> Color.rgb(255, 145, 40)
-            reductionPercent > 10.0 -> graphWarmTextColor
-            else -> graphCoolTextColor
+            reductionPercent > 30.0 -> palette.discharge
+            reductionPercent > 20.0 -> if (palette.isLight) Color.rgb(205, 85, 0) else Color.rgb(255, 145, 40)
+            reductionPercent > 10.0 -> palette.warm
+            else -> palette.cool
         }
     }
 
@@ -1700,13 +1828,10 @@ class BatteryCurrentService : Service() {
 
         val rows = capacityEstimator.recentDailyEstimates(10)
         val dateFormat = SimpleDateFormat("MMM d, yyyy", Locale.US)
+        val palette = graphPalette()
         val popup = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            background = GradientDrawable().apply {
-                cornerRadius = 18f
-                setColor(Color.argb(238, 24, 27, 32))
-                setStroke(2, Color.argb(190, 255, 255, 255))
-            }
+            background = graphPopupBackground(palette)
             setPadding(18, 14, 18, 14)
             elevation = 28f
 
@@ -1717,10 +1842,10 @@ class BatteryCurrentService : Service() {
                     text = "Recent capacity estimates"
                     textSize = 13f
                     setTypeface(typeface, Typeface.BOLD)
-                    setTextColor(Color.WHITE)
+                    setTextColor(palette.text)
                 }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
                 addView(Button(this@BatteryCurrentService).apply {
-                    styleCloseButton(this)
+                    styleCloseButton(this, palette)
                     text = "x"
                     setOnClickListener { removeCapacityHistoryPopup() }
                 })
@@ -1731,7 +1856,7 @@ class BatteryCurrentService : Service() {
                 addView(TextView(this@BatteryCurrentService).apply {
                     text = "No daily estimates yet"
                     textSize = 12f
-                    setTextColor(Color.argb(220, 255, 255, 255))
+                    setTextColor(palette.mutedText)
                     gravity = Gravity.CENTER
                     setPadding(0, 14, 0, 4)
                 })
@@ -1781,7 +1906,7 @@ class BatteryCurrentService : Service() {
             if (onClick != null) {
                 background = GradientDrawable().apply {
                     cornerRadius = 8f
-                    setColor(Color.argb(18, 255, 255, 255))
+                    setColor(if (graphPalette().isLight) Color.argb(42, 90, 75, 45) else Color.argb(18, 255, 255, 255))
                 }
                 setOnClickListener { onClick() }
             }
@@ -1799,9 +1924,10 @@ class BatteryCurrentService : Service() {
         isHeader: Boolean
     ) {
         addView(TextView(this@BatteryCurrentService).apply {
+            val palette = graphPalette()
             text = value
             textSize = if (isHeader) 11f else 12f
-            setTextColor(if (isHeader) graphEstimateLabelColor else Color.WHITE)
+            setTextColor(if (isHeader) palette.estimateLabel else palette.text)
             setTypeface(Typeface.MONOSPACE, if (isHeader) Typeface.BOLD else Typeface.NORMAL)
             gravity = gravityValue
             setSingleLine(true)
@@ -1815,13 +1941,10 @@ class BatteryCurrentService : Service() {
 
         val dateFormat = SimpleDateFormat("MMM d, yyyy", Locale.US)
         val events = capacityEstimator.eventsForDay(dayTimestampMs)
+        val palette = graphPalette()
         val popup = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            background = GradientDrawable().apply {
-                cornerRadius = 18f
-                setColor(Color.argb(242, 18, 20, 25))
-                setStroke(2, Color.argb(190, 255, 255, 255))
-            }
+            background = graphPopupBackground(palette)
             setPadding(18, 14, 18, 14)
             elevation = 32f
 
@@ -1832,10 +1955,10 @@ class BatteryCurrentService : Service() {
                     text = "Events for ${dateFormat.format(Date(dayTimestampMs))}"
                     textSize = 13f
                     setTypeface(typeface, Typeface.BOLD)
-                    setTextColor(Color.WHITE)
+                    setTextColor(palette.text)
                 }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
                 addView(Button(this@BatteryCurrentService).apply {
-                    styleCloseButton(this)
+                    styleCloseButton(this, palette)
                     text = "x"
                     setOnClickListener { removeCapacityEventDetailsPopup() }
                 })
@@ -1848,7 +1971,7 @@ class BatteryCurrentService : Service() {
                     addView(TextView(this@BatteryCurrentService).apply {
                         text = "No event records for this date"
                         textSize = 12f
-                        setTextColor(Color.argb(220, 255, 255, 255))
+                        setTextColor(palette.mutedText)
                         gravity = Gravity.CENTER
                         setPadding(0, 14, 0, 4)
                     })
@@ -1884,12 +2007,13 @@ class BatteryCurrentService : Service() {
         event: BatteryCapacityEstimator.CapacityEventSummary
     ) {
         val timeFormat = SimpleDateFormat("h:mm a", Locale.US)
+        val palette = graphPalette()
         addView(LinearLayout(this@BatteryCurrentService).apply {
             orientation = LinearLayout.VERTICAL
             background = GradientDrawable().apply {
                 cornerRadius = 12f
-                setColor(Color.argb(38, 255, 255, 255))
-                setStroke(1, Color.argb(80, 255, 255, 255))
+                setColor(if (palette.isLight) Color.argb(52, 90, 75, 45) else Color.argb(38, 255, 255, 255))
+                setStroke(1, if (palette.isLight) Color.argb(90, 65, 55, 35) else Color.argb(80, 255, 255, 255))
             }
             setPadding(14, 12, 14, 12)
 
@@ -1897,7 +2021,7 @@ class BatteryCurrentService : Service() {
                 text = "Event $eventNumber (${event.direction})"
                 textSize = 12f
                 setTypeface(Typeface.MONOSPACE, Typeface.BOLD)
-                setTextColor(graphEstimateLabelColor)
+                setTextColor(palette.estimateLabel)
             })
             addCapacityEventLine("Start", timeFormat.format(Date(event.startTimestampMs)))
             addCapacityEventLine("End", timeFormat.format(Date(event.endTimestampMs)))
@@ -1925,13 +2049,13 @@ class BatteryCurrentService : Service() {
                 text = "$label:"
                 textSize = 11f
                 setTypeface(Typeface.MONOSPACE, Typeface.NORMAL)
-                setTextColor(Color.argb(220, 255, 255, 255))
+                setTextColor(graphPalette().mutedText)
             }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1.2f))
             addView(TextView(this@BatteryCurrentService).apply {
                 text = value
                 textSize = 11f
                 setTypeface(Typeface.MONOSPACE, Typeface.NORMAL)
-                setTextColor(Color.WHITE)
+                setTextColor(graphPalette().text)
                 gravity = Gravity.END
             }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1.1f))
         })
@@ -1942,13 +2066,10 @@ class BatteryCurrentService : Service() {
         removeSocCurvePopup()
 
         val points = capacityEstimator.socLinearityPoints()
+        val palette = graphPalette()
         val popup = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            background = GradientDrawable().apply {
-                cornerRadius = 18f
-                setColor(Color.argb(244, 18, 20, 25))
-                setStroke(2, Color.argb(190, 255, 255, 255))
-            }
+            background = graphPopupBackground(palette)
             setPadding(18, 14, 18, 14)
             elevation = 32f
 
@@ -1959,10 +2080,10 @@ class BatteryCurrentService : Service() {
                     text = "State of Charge (SOC) linearity deviation"
                     textSize = 13f
                     setTypeface(typeface, Typeface.BOLD)
-                    setTextColor(Color.WHITE)
+                    setTextColor(palette.text)
                 }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
                 addView(Button(this@BatteryCurrentService).apply {
-                    styleCloseButton(this)
+                    styleCloseButton(this, palette)
                     text = "x"
                     setOnClickListener { removeSocCurvePopup() }
                 })
@@ -1971,11 +2092,11 @@ class BatteryCurrentService : Service() {
             addView(TextView(this@BatteryCurrentService).apply {
                 text = "Deviation from ideal linear SOC. Extreme outliers are ignored."
                 textSize = 11f
-                setTextColor(Color.argb(220, 255, 255, 255))
+                setTextColor(palette.mutedText)
                 setPadding(0, 6, 0, 8)
             })
 
-            addView(SocBucketCurveView(this@BatteryCurrentService).apply {
+            addView(SocBucketCurveView(this@BatteryCurrentService, palette).apply {
                 setPoints(points)
             }, LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
@@ -1991,7 +2112,7 @@ class BatteryCurrentService : Service() {
                     String.format(Locale.US, "%d samples displayed, max fitted deviation %.0f%%", learnedSampleCount, maxCurveDeviation * 100.0)
                 }
                 textSize = 11f
-                setTextColor(graphEstimateLabelColor)
+                setTextColor(palette.estimateLabel)
                 gravity = Gravity.CENTER
                 setPadding(0, 8, 0, 0)
             })
@@ -2018,13 +2139,10 @@ class BatteryCurrentService : Service() {
         val graphContainer = graphOverlayView ?: return
         removeCalibrationResultPopup()
 
+        val palette = graphPalette()
         val popup = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            background = GradientDrawable().apply {
-                setColor(Color.argb(238, 18, 20, 26))
-                cornerRadius = 12f
-                setStroke(2, Color.argb(190, 255, 255, 255))
-            }
+            background = graphPopupBackground(palette, cornerRadius = 12f)
             setPadding(18, 14, 18, 14)
             elevation = 34f
 
@@ -2035,10 +2153,10 @@ class BatteryCurrentService : Service() {
                     text = "Calibration complete"
                     textSize = 13f
                     setTypeface(typeface, Typeface.BOLD)
-                    setTextColor(Color.WHITE)
+                    setTextColor(palette.text)
                 }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
                 addView(Button(this@BatteryCurrentService).apply {
-                    styleCloseButton(this)
+                    styleCloseButton(this, palette)
                     text = "x"
                     setOnClickListener { removeCalibrationResultPopup() }
                 })
@@ -2047,7 +2165,7 @@ class BatteryCurrentService : Service() {
             addView(TextView(this@BatteryCurrentService).apply {
                 text = calibrationResultText(result)
                 textSize = 12f
-                setTextColor(graphEstimateLabelColor)
+                setTextColor(palette.estimateLabel)
                 setPadding(0, 8, 0, 0)
             })
         }
@@ -2302,16 +2420,17 @@ class BatteryCurrentService : Service() {
     private fun styleGraphMenuButton(
         button: Button,
         textSizeSp: Float = 13f,
-        backgroundColor: Int = Color.WHITE,
-        textColor: Int = Color.rgb(70, 25, 10)
+        backgroundColor: Int? = null,
+        textColor: Int? = null
     ) {
+        val palette = graphPalette()
         button.apply {
             textSize = textSizeSp
             isAllCaps = false
             includeFontPadding = false
             setSingleLine(true)
-            backgroundTintList = ColorStateList.valueOf(backgroundColor)
-            setTextColor(textColor)
+            backgroundTintList = ColorStateList.valueOf(backgroundColor ?: palette.buttonBackground)
+            setTextColor(textColor ?: palette.buttonText)
             minWidth = 0
             minimumWidth = 0
             minHeight = 0
@@ -2326,7 +2445,7 @@ class BatteryCurrentService : Service() {
         }
     }
 
-    private fun styleCloseButton(button: Button) {
+    private fun styleCloseButton(button: Button, palette: GraphPalette = graphPalette()) {
         button.apply {
             textSize = 15f
             isAllCaps = false
@@ -2335,10 +2454,10 @@ class BatteryCurrentService : Service() {
             background = GradientDrawable().apply {
                 shape = GradientDrawable.RECTANGLE
                 cornerRadius = 8f
-                setColor(Color.argb(20, 255, 255, 255))
-                setStroke(2, Color.argb(190, 255, 255, 255))
+                setColor(palette.closeBackground)
+                setStroke(2, palette.closeBorder)
             }
-            setTextColor(Color.WHITE)
+            setTextColor(palette.closeText)
             minWidth = 0
             minimumWidth = 0
             minHeight = 0
@@ -2358,7 +2477,7 @@ class BatteryCurrentService : Service() {
     }
 
     private fun buildLiveSummary(now: Long): SpannableString {
-        return styleLiveDisplayText(buildGraphLiveDisplayText(now), useLightOverlayPalette = false)
+        return styleLiveDisplayText(buildGraphLiveDisplayText(now), useLightOverlayPalette = isLightOverlayEnabled())
     }
 
     private fun styleLiveDisplayText(text: String, useLightOverlayPalette: Boolean): SpannableString {
@@ -2617,37 +2736,40 @@ class BatteryCurrentService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
-    private inner class SocBucketCurveView(context: Context) : View(context) {
+    private inner class SocBucketCurveView(
+        context: Context,
+        private val palette: GraphPalette
+    ) : View(context) {
         private val points = ArrayList<BatteryCapacityEstimator.SocLinearityPoint>()
         private val axisPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.argb(190, 255, 255, 255)
+            color = palette.axis
             strokeWidth = 2f
         }
         private val gridPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.argb(55, 255, 255, 255)
+            color = palette.grid
             strokeWidth = 1f
         }
         private val curvePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.rgb(170, 245, 150)
+            color = palette.rightAxisPositive
             style = Paint.Style.STROKE
             strokeWidth = 5f
         }
         private val pointPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.WHITE
+            color = palette.text
             style = Paint.Style.FILL
         }
         private val idealPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = graphEstimateLabelColor
+            color = palette.estimateLabel
             strokeWidth = 3f
             pathEffect = DashPathEffect(floatArrayOf(10f, 8f), 0f)
         }
         private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.WHITE
+            color = palette.text
             textSize = 24f
             typeface = Typeface.MONOSPACE
         }
         private val labelPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.argb(210, 255, 255, 255)
+            color = palette.mutedText
             textSize = 21f
             typeface = Typeface.MONOSPACE
         }
@@ -2696,9 +2818,9 @@ class BatteryCurrentService : Service() {
 
             plottedSamples.forEach { (point, x, y) ->
                 pointPaint.color = if (point.sampleCount >= 3) {
-                    Color.WHITE
+                    palette.text
                 } else {
-                    Color.argb(185, 255, 255, 255)
+                    palette.mutedText
                 }
                 canvas.drawCircle(x, y, 5f, pointPaint)
             }
@@ -2795,7 +2917,10 @@ class BatteryCurrentService : Service() {
         }
     }
 
-    private class EnergyGraphView(context: Context) : View(context) {
+    private class EnergyGraphView(
+        context: Context,
+        private val palette: GraphPalette
+    ) : View(context) {
         private val points = ArrayList<EnergyPoint>()
         private var displayUnit = ENERGY_UNIT_MWH
         private var zeroTimestampMs = 0L
@@ -2840,84 +2965,84 @@ class BatteryCurrentService : Service() {
             strokeJoin = Paint.Join.ROUND
         }
         private val rightAxisLabelBackgroundPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.argb(135, 110, 115, 125)
+            color = palette.labelBackground
             style = Paint.Style.FILL
         }
         private val gridPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.argb(80, 255, 255, 255)
+            color = palette.grid
             style = Paint.Style.STROKE
             strokeWidth = 2f
         }
         private val axisPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.WHITE
+            color = palette.axis
             style = Paint.Style.STROKE
             strokeWidth = 4f
         }
         private val tickPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.argb(185, 255, 255, 255)
+            color = palette.tick
             style = Paint.Style.STROKE
             strokeWidth = 3f
         }
         private val minorTickPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.argb(170, 255, 255, 255)
+            color = palette.minorTick
             style = Paint.Style.STROKE
             strokeWidth = 2.2f
         }
         private val zeroLinePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.argb(160, 255, 255, 255)
+            color = palette.zeroLine
             style = Paint.Style.STROKE
             strokeWidth = 3f
         }
         private val rightAxisZeroLinePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.argb(150, 255, 255, 255)
+            color = palette.zeroLine
             style = Paint.Style.STROKE
             strokeWidth = 2f
             pathEffect = DashPathEffect(floatArrayOf(10f, 8f), 0f)
         }
         private val batteryLowThresholdPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.argb(105, 230, 95, 95)
+            color = palette.thresholdLow
             style = Paint.Style.STROKE
             strokeWidth = 2.5f
             pathEffect = DashPathEffect(floatArrayOf(12f, 10f), 0f)
         }
         private val batteryHighThresholdPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.argb(105, 82, 190, 128)
+            color = palette.thresholdHigh
             style = Paint.Style.STROKE
             strokeWidth = 2.5f
             pathEffect = DashPathEffect(floatArrayOf(12f, 10f), 0f)
         }
         private val axisTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.argb(220, 255, 255, 255)
+            color = palette.text
             textSize = 28f
         }
         private val tickTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.argb(210, 255, 255, 255)
+            color = palette.text
             textSize = 26f
         }
         private val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.argb(60, 82, 190, 128)
+            color = palette.fill
             style = Paint.Style.FILL
         }
         private val resetZoomTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.rgb(70, 38, 28)
+            color = palette.resetZoomText
             textSize = 28f
             typeface = Typeface.DEFAULT_BOLD
             textAlign = Paint.Align.CENTER
         }
         private val resetZoomBackgroundPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.argb(230, 245, 248, 244)
+            color = palette.resetZoomBackground
             style = Paint.Style.FILL
         }
         private val zoomButtonBackgroundPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.argb(235, 255, 215, 35)
+            color = palette.zoomActiveBackground
             style = Paint.Style.FILL
         }
         private val zoomButtonInactivePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.argb(220, 70, 76, 88)
+            color = palette.zoomInactiveBackground
             style = Paint.Style.FILL
         }
         private val zoomButtonTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.WHITE
+            color = palette.zoomInactiveText
             textSize = 50f
             typeface = Typeface.DEFAULT_BOLD
             textAlign = Paint.Align.CENTER
@@ -3177,16 +3302,16 @@ class BatteryCurrentService : Service() {
             fillPath.lineTo(plotBounds.right, zeroY)
             fillPath.close()
 
-            fillPaint.color = Color.argb(22, 255, 255, 255)
+            fillPaint.color = palette.fill
             canvas.drawPath(fillPath, fillPaint)
             canvas.drawLine(plotBounds.left, zeroY, plotBounds.right, zeroY, zeroLinePaint)
             for (i in 1 until chartPoints.size) {
                 val previous = chartPoints[i - 1]
                 val current = chartPoints[i]
                 linePaint.color = if (graphValue(visiblePoints[i]) >= graphValue(visiblePoints[i - 1])) {
-                    Color.rgb(82, 190, 128)
+                    palette.charge
                 } else {
-                    Color.rgb(230, 95, 95)
+                    palette.discharge
                 }
                 canvas.drawLine(previous.first, previous.second, current.first, current.second, linePaint)
             }
@@ -3472,7 +3597,7 @@ class BatteryCurrentService : Service() {
             canvas.drawRoundRect(visualBounds, 12f, 12f, paint)
             val centeredBaseline = visualBounds.centerY() -
                 (zoomButtonTextPaint.descent() + zoomButtonTextPaint.ascent()) / 2f
-            zoomButtonTextPaint.color = if (isActive) Color.rgb(45, 38, 0) else Color.WHITE
+            zoomButtonTextPaint.color = if (isActive) palette.zoomActiveText else palette.zoomInactiveText
             canvas.drawText(label, visualBounds.centerX(), centeredBaseline, zoomButtonTextPaint)
         }
 
@@ -3526,9 +3651,9 @@ class BatteryCurrentService : Service() {
 
         private fun rightAxisTraceColor(value: Double): Int {
             return if (rightAxisMode == RightAxisMode.CURRENT) {
-                if (value >= 0.0) Color.rgb(170, 245, 150) else Color.rgb(255, 165, 55)
+                if (value >= 0.0) palette.rightAxisPositive else palette.rightAxisNegative
             } else {
-                Color.rgb(170, 245, 150)
+                palette.rightAxisPositive
             }
         }
 

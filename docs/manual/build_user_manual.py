@@ -225,7 +225,7 @@ def build_manual():
         ("X button", "Closes the startup page without changing the monitoring state."),
         ("Reset foreground display", "Moves the floating display back to the center if it was dragged to an unreachable edge."),
         ("Calibration setup", "Starts the guided calibration flow. The button reads Start when inactive and ON while armed or running."),
-        ("Light-theme foreground display", "Switches the foreground overlay background for better contrast on different app backgrounds."),
+        ("Light-theme foreground display", "Switches the foreground overlay and chart popups to a light beige theme with higher-contrast graph, table, button, and text colors."),
         ("Reset graph at 25% / 75%", "Automatically starts a fresh graph segment when battery state crosses 25% or 75%. This reset affects the graph display baseline, not the stored capacity history."),
         ("Original capacity", "Stores the phone's rated battery capacity so the app can color capacity estimates relative to the original rating."),
         ("Monitor", "Starts or stops the normal monitoring service."),
@@ -261,6 +261,10 @@ def build_manual():
     doc.add_heading("4. Graph Popup", level=1)
     doc.add_paragraph(
         "Tap the foreground display to open the graph popup. The popup shows the main accumulated mAh or mWh trace and an optional right-axis trace."
+    )
+    doc.add_paragraph(
+        "If Light-theme foreground display is enabled on the startup page, the graph popup, SOC curve popup, 25%-75% history table, event details, and calibration summary use a light chart theme. "
+        "The light theme keeps stronger text, button, axis, and trace colors so the chart remains readable on the beige background."
     )
     add_key_value_table(doc, [
         ("x button", "Closes the graph popup and returns to the foreground display."),
