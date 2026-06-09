@@ -1517,7 +1517,7 @@ class BatteryCurrentService : Service() {
             addView(TextView(this@BatteryCurrentService).apply {
                 textSize = 13f
                 setTypeface(typeface, Typeface.BOLD)
-                setTextColor(Color.rgb(255, 220, 35))
+                setTextColor(graphCollapseArrowColor())
                 gravity = Gravity.CENTER
                 minWidth = 72
                 minHeight = 44
@@ -1537,6 +1537,7 @@ class BatteryCurrentService : Service() {
     private fun updateGraphMenuVisibility(container: LinearLayout) {
         val toggleText = (container.getChildAt(4) as? LinearLayout)?.getChildAt(0) as? TextView
         toggleText?.text = if (graphMenuCollapsed) "\u25BC" else "\u25B2"
+        toggleText?.setTextColor(graphCollapseArrowColor())
 
         container.childAtOrNull(5)?.visibility = if (graphMenuCollapsed) View.GONE else View.VISIBLE
         container.childAtOrNull(6)?.visibility = if (graphMenuCollapsed) View.GONE else View.VISIBLE
@@ -1547,6 +1548,10 @@ class BatteryCurrentService : Service() {
 
     private fun LinearLayout.childAtOrNull(index: Int): View? {
         return if (index in 0 until childCount) getChildAt(index) else null
+    }
+
+    private fun graphCollapseArrowColor(): Int {
+        return if (graphPalette().isLight) lightGraphTextColor else Color.rgb(255, 220, 35)
     }
 
     private fun updateGraphZoomResetButton() {
@@ -1874,6 +1879,7 @@ class BatteryCurrentService : Service() {
                             )
                         }
                     })
+                    post { fullScroll(View.FOCUS_DOWN) }
                 }, LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.MATCH_PARENT,
                     164
@@ -1984,6 +1990,7 @@ class BatteryCurrentService : Service() {
 
             addView(ScrollView(this@BatteryCurrentService).apply {
                 addView(scrollContent)
+                post { fullScroll(View.FOCUS_DOWN) }
             }, LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 460
