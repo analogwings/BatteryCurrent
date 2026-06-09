@@ -78,6 +78,7 @@ class MainActivity : ComponentActivity() {
                 ) {
                     BatteryCurrentScreen(
                         initialLightOverlayEnabled = OverlayThemePreference.isLightBackgroundEnabled(this),
+                        initialAutoResetThresholdEnabled = AutoResetThresholdPreference.isResetOnThresholdEnabled(this),
                         initialOriginalCapacityMah = BatteryCapacityReference.originalCapacityMah(this),
                         initialShowCapacityPrompt = !BatteryCapacityReference.hasSeenPrompt(this),
                         fullDischargeModeEnabled = fullDischargeModeState.value,
@@ -91,6 +92,9 @@ class MainActivity : ComponentActivity() {
                         },
                         onLightOverlayChanged = { enabled ->
                             OverlayThemePreference.setLightBackgroundEnabled(this, enabled)
+                        },
+                        onAutoResetThresholdChanged = { enabled ->
+                            AutoResetThresholdPreference.setResetOnThresholdEnabled(this, enabled)
                         },
                         onResetOverlayPosition = { resetForegroundOverlayPosition() },
                         onOriginalCapacityChanged = { capacityMah ->
@@ -237,12 +241,14 @@ class MainActivity : ComponentActivity() {
 @Composable
 private fun BatteryCurrentScreen(
     initialLightOverlayEnabled: Boolean,
+    initialAutoResetThresholdEnabled: Boolean,
     initialOriginalCapacityMah: Int?,
     initialShowCapacityPrompt: Boolean,
     fullDischargeModeEnabled: Boolean,
     monitoringRunning: Boolean,
     onMonitorClick: () -> Unit,
     onLightOverlayChanged: (Boolean) -> Unit,
+    onAutoResetThresholdChanged: (Boolean) -> Unit,
     onResetOverlayPosition: () -> Unit,
     onOriginalCapacityChanged: (Int?) -> Unit,
     onOriginalCapacitySkipped: () -> Unit,
@@ -251,6 +257,7 @@ private fun BatteryCurrentScreen(
     onClose: () -> Unit
 ) {
     var lightOverlayEnabled by remember { mutableStateOf(initialLightOverlayEnabled) }
+    var autoResetThresholdEnabled by remember { mutableStateOf(initialAutoResetThresholdEnabled) }
     var originalCapacityMah by remember { mutableStateOf(initialOriginalCapacityMah) }
     var showCapacityDialog by remember { mutableStateOf(initialShowCapacityPrompt) }
     var showFullDischargeDialog by remember { mutableStateOf(false) }
@@ -349,6 +356,19 @@ private fun BatteryCurrentScreen(
                 onCheckedChange = { enabled ->
                     lightOverlayEnabled = enabled
                     onLightOverlayChanged(enabled)
+                }
+            )
+        }
+
+        Spacer(modifier = Modifier.height(12.dp))
+
+        SettingRow(label = "Reset graph at 25% / 75%") {
+            Switch(
+                checked = autoResetThresholdEnabled,
+                colors = silverSwitchColors(),
+                onCheckedChange = { enabled ->
+                    autoResetThresholdEnabled = enabled
+                    onAutoResetThresholdChanged(enabled)
                 }
             )
         }

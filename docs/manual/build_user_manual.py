@@ -226,6 +226,7 @@ def build_manual():
         ("Reset foreground display", "Moves the floating display back to the center if it was dragged to an unreachable edge."),
         ("Calibration setup", "Starts the guided calibration flow. The button reads Start when inactive and ON while armed or running."),
         ("Light-theme foreground display", "Switches the foreground overlay background for better contrast on different app backgrounds."),
+        ("Reset graph at 25% / 75%", "Automatically starts a fresh graph segment when battery state crosses 25% or 75%. This reset affects the graph display baseline, not the stored capacity history."),
         ("Original capacity", "Stores the phone's rated battery capacity so the app can color capacity estimates relative to the original rating."),
         ("Monitor", "Starts or stops the normal monitoring service."),
     ])
@@ -252,7 +253,7 @@ def build_manual():
         ("Temperature", "Battery temperature in degrees C or degrees F."),
         ("Voltage", "Measured battery voltage from Android battery status data."),
         ("Energy / Charge", "Accumulated mWh or mAh since reset, depending on the selected unit."),
-        ("Battery", "Battery state of charge as reported by Android."),
+        ("Battery", "Battery state of charge as reported by Android. Battery percent is green above 30%, amber from 15% to 30%, and red below 15%."),
         ("CAL prefix", "Appears during calibration so the user knows the stricter measurement mode is active."),
         ("Status dot", "A yellow dot means a capacity event is armed. A blinking green dot means a normal capacity event is recording. A blinking red dot means calibration is active."),
     ])

@@ -116,6 +116,9 @@ class BatteryCurrentService : Service() {
     private val energyTotalKey = "energy_total_mwh"
     private val chargeTotalKey = "charge_total_mah"
     private val energyHistoryKey = "energy_history"
+    private val graphDisplayZeroTimestampKey = "graph_display_zero_timestamp_ms"
+    private val graphDisplayZeroEnergyKey = "graph_display_zero_energy_mwh"
+    private val graphDisplayZeroChargeKey = "graph_display_zero_charge_mah"
     private val energyUnitKey = "energy_unit"
 
     private val displayPrefsName = "battery_current_display_prefs"
@@ -157,6 +160,7 @@ class BatteryCurrentService : Service() {
     private var latestBatteryPercent: Int? = null
     private var latestGraphBatteryPercent: Double? = null
     private var latestBatteryPercentHasFraction = false
+    private var lastAutoResetBatteryPercent: Int? = null
     private var capacityDisplayState = BatteryCapacityEstimator.DisplayState(null, null, false, false)
     private var graphOverlayCreatedAtMs = 0L
     private var lastDisplay = CurrentDisplay(SpannedString("Starting..."))
@@ -471,6 +475,9 @@ class BatteryCurrentService : Service() {
         val restoredTotal = prefs.getFloat(energyTotalKey, Float.NaN)
         val restoredChargeTotal = prefs.getFloat(chargeTotalKey, Float.NaN)
         val restoredHistory = prefs.getString(energyHistoryKey, null)
+        val restoredGraphZeroTimestampMs = prefs.getLong(graphDisplayZeroTimestampKey, 0L)
+        val restoredGraphZeroEnergy = prefs.getFloat(graphDisplayZeroEnergyKey, 0f).toDouble()
+        val restoredGraphZeroCharge = prefs.getFloat(graphDisplayZeroChargeKey, 0f).toDouble()
 
         if (restoredSessionStartMs <= 0L || restoredTotal.isNaN() || restoredHistory.isNullOrBlank()) {
             return false
@@ -503,6 +510,10 @@ class BatteryCurrentService : Service() {
         lastPluggedState = isPluggedIn(readBatteryStatus())
         energyHistory.clear()
         energyHistory.addAll(restoredPoints)
+        graphDisplayZeroTimestampMs = restoredGraphZeroTimestampMs
+        graphDisplayZeroEnergyMilliWattHours = restoredGraphZeroEnergy
+        graphDisplayZeroChargeMilliAmpHours = restoredGraphZeroCharge
+        lastAutoResetBatteryPercent = restoredPoints.lastOrNull()?.batteryPercent?.roundToInt()?.coerceIn(0, 100)
         trimEnergyHistory(lastSampleTimestampMs)
         return true
     }
@@ -520,6 +531,9 @@ class BatteryCurrentService : Service() {
             .putFloat(energyTotalKey, totalNetEnergyMilliWattHours.toFloat())
             .putFloat(chargeTotalKey, totalNetChargeMilliAmpHours.toFloat())
             .putString(energyHistoryKey, encodedHistory)
+            .putLong(graphDisplayZeroTimestampKey, graphDisplayZeroTimestampMs)
+            .putFloat(graphDisplayZeroEnergyKey, graphDisplayZeroEnergyMilliWattHours.toFloat())
+            .putFloat(graphDisplayZeroChargeKey, graphDisplayZeroChargeMilliAmpHours.toFloat())
             .apply()
     }
 
@@ -635,6 +649,7 @@ class BatteryCurrentService : Service() {
             temperatureC = temperatureC,
             voltageMv = voltageMv
         )
+        resetGraphDisplayOnCapacityThresholdCrossing(now)
         when (FullDischargeTest.processSample(
             context = this,
             batteryPercent = latestBatteryPercent,
@@ -661,6 +676,34 @@ class BatteryCurrentService : Service() {
             else -> Unit
         }
         persistEnergyTracking()
+    }
+
+    private fun resetGraphDisplayOnCapacityThresholdCrossing(now: Long) {
+        val currentPercent = latestBatteryPercent ?: return
+        val previousPercent = lastAutoResetBatteryPercent
+        lastAutoResetBatteryPercent = currentPercent
+
+        if (!AutoResetThresholdPreference.isResetOnThresholdEnabled(this)) return
+        if (FullDischargeTest.isModeEnabled(this) || FullDischargeTest.isActive(this)) return
+        if (previousPercent == null) return
+
+        val crossedThreshold = listOf(25, 75).any { threshold ->
+            (previousPercent < threshold && currentPercent >= threshold) ||
+                (previousPercent > threshold && currentPercent <= threshold)
+        }
+        if (!crossedThreshold) return
+
+        resetGraphDisplayBaseline(now)
+    }
+
+    private fun resetGraphDisplayBaseline(now: Long) {
+        graphDisplayZeroTimestampMs = now
+        graphDisplayZeroEnergyMilliWattHours = totalNetEnergyMilliWattHours
+        graphDisplayZeroChargeMilliAmpHours = totalNetChargeMilliAmpHours
+        graphOverlayView
+            ?.let { ((it as? LinearLayout)?.getChildAt(3) as? LinearLayout)?.getChildAt(0) as? EnergyGraphView }
+            ?.resetViewport()
+        refreshFloatingOverlayText()
     }
 
     private fun trimEnergyHistory(now: Long, maxAgeMs: Long = maxEnergyHistoryAgeMs) {
@@ -1945,7 +1988,7 @@ class BatteryCurrentService : Service() {
                 text = if (points.isEmpty()) {
                     "No SOC bucket data yet. Data fills in as battery % changes while monitoring."
                 } else {
-                    String.format(Locale.US, "%d samples learnt, max fitted deviation %.0f%%", learnedSampleCount, maxCurveDeviation * 100.0)
+                    String.format(Locale.US, "%d samples displayed, max fitted deviation %.0f%%", learnedSampleCount, maxCurveDeviation * 100.0)
                 }
                 textSize = 11f
                 setTextColor(graphEstimateLabelColor)
@@ -2337,6 +2380,12 @@ class BatteryCurrentService : Service() {
                 else -> coolTextColor
             }
         } ?: neutralColor
+        val batteryColor = batteryPercentTextColor(
+            coolTextColor = coolTextColor,
+            warmTextColor = warmTextColor,
+            dischargeTextColor = dischargeTextColor,
+            neutralColor = neutralColor
+        )
 
         summary.setSpan(
             ForegroundColorSpan(neutralColor),
@@ -2348,7 +2397,23 @@ class BatteryCurrentService : Service() {
         summary.colorSpan(formatSelectedEnergy(), chargeColor)
         summary.colorSpan(formatSelectedGraphEnergy(), chargeColor)
         summary.colorSpan(formatTemperatureText(), temperatureColor)
+        summary.colorSpan(formatBatteryPercentText(), batteryColor)
+        summary.colorSpan(formatGraphBatteryPercentText(), batteryColor)
         return summary
+    }
+
+    private fun batteryPercentTextColor(
+        coolTextColor: Int,
+        warmTextColor: Int,
+        dischargeTextColor: Int,
+        neutralColor: Int
+    ): Int {
+        val percent = latestGraphBatteryPercent ?: latestBatteryPercent?.toDouble() ?: return neutralColor
+        return when {
+            percent > 30.0 -> coolTextColor
+            percent >= 15.0 -> warmTextColor
+            else -> dischargeTextColor
+        }
     }
 
     private fun SpannableString.colorSpan(target: String, color: Int) {
