@@ -79,6 +79,7 @@ class MainActivity : ComponentActivity() {
                     BatteryCurrentScreen(
                         initialLightOverlayEnabled = OverlayThemePreference.isLightBackgroundEnabled(this),
                         initialAutoResetThresholdEnabled = AutoResetThresholdPreference.isResetOnThresholdEnabled(this),
+                        initialCapacityThresholds = CapacityThresholdPreference.load(this),
                         initialOriginalCapacityMah = BatteryCapacityReference.originalCapacityMah(this),
                         initialShowCapacityPrompt = !BatteryCapacityReference.hasSeenPrompt(this),
                         fullDischargeModeEnabled = fullDischargeModeState.value,
@@ -95,6 +96,9 @@ class MainActivity : ComponentActivity() {
                         },
                         onAutoResetThresholdChanged = { enabled ->
                             AutoResetThresholdPreference.setResetOnThresholdEnabled(this, enabled)
+                        },
+                        onCapacityThresholdsChanged = { low, high ->
+                            CapacityThresholdPreference.save(this, low, high)
                         },
                         onResetOverlayPosition = { resetForegroundOverlayPosition() },
                         onOriginalCapacityChanged = { capacityMah ->
@@ -242,6 +246,7 @@ class MainActivity : ComponentActivity() {
 private fun BatteryCurrentScreen(
     initialLightOverlayEnabled: Boolean,
     initialAutoResetThresholdEnabled: Boolean,
+    initialCapacityThresholds: CapacityThresholdPreference.Thresholds,
     initialOriginalCapacityMah: Int?,
     initialShowCapacityPrompt: Boolean,
     fullDischargeModeEnabled: Boolean,
@@ -249,6 +254,7 @@ private fun BatteryCurrentScreen(
     onMonitorClick: () -> Unit,
     onLightOverlayChanged: (Boolean) -> Unit,
     onAutoResetThresholdChanged: (Boolean) -> Unit,
+    onCapacityThresholdsChanged: (Int, Int) -> CapacityThresholdPreference.Thresholds,
     onResetOverlayPosition: () -> Unit,
     onOriginalCapacityChanged: (Int?) -> Unit,
     onOriginalCapacitySkipped: () -> Unit,
@@ -258,9 +264,11 @@ private fun BatteryCurrentScreen(
 ) {
     var lightOverlayEnabled by remember { mutableStateOf(initialLightOverlayEnabled) }
     var autoResetThresholdEnabled by remember { mutableStateOf(initialAutoResetThresholdEnabled) }
+    var capacityThresholds by remember { mutableStateOf(initialCapacityThresholds) }
     var originalCapacityMah by remember { mutableStateOf(initialOriginalCapacityMah) }
     var showCapacityDialog by remember { mutableStateOf(initialShowCapacityPrompt) }
     var showFullDischargeDialog by remember { mutableStateOf(false) }
+    var showThresholdDialog by remember { mutableStateOf(false) }
 
     if (showCapacityDialog) {
         OriginalCapacityDialog(
@@ -289,6 +297,18 @@ private fun BatteryCurrentScreen(
                 onFullDischargeModeOff()
                 showFullDischargeDialog = false
             }
+        )
+    }
+
+    if (showThresholdDialog) {
+        CapacityThresholdDialog(
+            initialThresholds = capacityThresholds,
+            onSave = { low, high ->
+                val saved = onCapacityThresholdsChanged(low, high)
+                capacityThresholds = saved
+                showThresholdDialog = false
+            },
+            onDismiss = { showThresholdDialog = false }
         )
     }
 
@@ -362,7 +382,7 @@ private fun BatteryCurrentScreen(
 
         Spacer(modifier = Modifier.height(12.dp))
 
-        SettingRow(label = "Reset graph at 25% / 75%") {
+        SettingRow(label = "Reset graph at ${capacityThresholds.lowPercent}% / ${capacityThresholds.highPercent}%") {
             Switch(
                 checked = autoResetThresholdEnabled,
                 colors = silverSwitchColors(),
@@ -370,6 +390,15 @@ private fun BatteryCurrentScreen(
                     autoResetThresholdEnabled = enabled
                     onAutoResetThresholdChanged(enabled)
                 }
+            )
+        }
+
+        Spacer(modifier = Modifier.height(12.dp))
+
+        SettingRow(label = "Capacity window: ${capacityThresholds.lowPercent}-${capacityThresholds.highPercent}%") {
+            StartupActionButton(
+                text = "Edit",
+                onClick = { showThresholdDialog = true }
             )
         }
 
@@ -452,6 +481,62 @@ private fun FullDischargeTestDialog(
         confirmButton = {
             Button(onClick = if (modeEnabled) onTurnOff else onResetAndStart) {
                 Text(if (modeEnabled) "Turn Off" else "Start")
+            }
+        },
+        dismissButton = {
+            Button(onClick = onDismiss) {
+                Text("Cancel")
+            }
+        }
+    )
+}
+
+@Composable
+private fun CapacityThresholdDialog(
+    initialThresholds: CapacityThresholdPreference.Thresholds,
+    onSave: (Int, Int) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var lowText by remember { mutableStateOf(initialThresholds.lowPercent.toString()) }
+    var highText by remember { mutableStateOf(initialThresholds.highPercent.toString()) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Capacity window") },
+        text = {
+            Column {
+                Text(
+                    text = "Set the low and high battery percentages used for capacity estimates, graph reset markers, and status dots. The low threshold must be at least 20%, and the window must be at least 40% wide. Example: 40% to 80% estimates capacity as measured mAh x 2.5.",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+                Spacer(modifier = Modifier.height(12.dp))
+                OutlinedTextField(
+                    value = lowText,
+                    onValueChange = { value -> lowText = value.filter { it.isDigit() }.take(2) },
+                    label = { Text("Low %") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = highText,
+                    onValueChange = { value -> highText = value.filter { it.isDigit() }.take(2) },
+                    label = { Text("High %") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+                )
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    onSave(
+                        lowText.toIntOrNull() ?: CapacityThresholdPreference.DEFAULT_LOW_PERCENT,
+                        highText.toIntOrNull() ?: CapacityThresholdPreference.DEFAULT_HIGH_PERCENT
+                    )
+                }
+            ) {
+                Text("Save")
             }
         },
         dismissButton = {

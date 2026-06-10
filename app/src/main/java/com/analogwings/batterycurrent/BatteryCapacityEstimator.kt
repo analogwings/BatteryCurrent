@@ -117,6 +117,9 @@ class BatteryCapacityEstimator(private val context: Context) {
         context.getSharedPreferences("battery_capacity_estimator", Context.MODE_PRIVATE)
     }
 
+    private val thresholds: CapacityThresholdPreference.Thresholds
+        get() = CapacityThresholdPreference.load(context)
+
     fun processSample(
         batteryPercent: Int?,
         totalChargeMah: Double,
@@ -220,6 +223,8 @@ class BatteryCapacityEstimator(private val context: Context) {
         val avgVoltageIndex = indexOf("AvgVoltage_mV", "AvgVoltageMv", "AvgVoltage")
         val peukertIndex = indexOf("PeukertK", "Peukert_k", "PeukertConstant")
         val adjustedIndex = indexOf("PeukertAdjustedCapacity_mAh")
+        val lowThresholdIndex = indexOf("LowPercent")
+        val highThresholdIndex = indexOf("HighPercent")
 
         return lines.drop(1).mapNotNull { line ->
             val parts = line.split(",")
@@ -231,7 +236,10 @@ class BatteryCapacityEstimator(private val context: Context) {
 
             val startMah = parts.getOrNull(startMahIndex)?.toDoubleOrNull() ?: return@mapNotNull null
             val endMah = parts.getOrNull(endMahIndex)?.toDoubleOrNull() ?: return@mapNotNull null
-            val capacityEstimate = (abs(endMah - startMah) * 100.0 / EVENT_PERCENT_SPAN).roundToInt()
+            val capacityEstimate = extrapolateCapacityMah(
+                deltaMah = abs(endMah - startMah),
+                spanPercent = eventSpanPercent(parts, lowThresholdIndex, highThresholdIndex)
+            )
 
             CapacityEventSummary(
                 startTimestampMs = startTimestamp,
@@ -363,10 +371,11 @@ class BatteryCapacityEstimator(private val context: Context) {
         temperatureC: Double?,
         voltageMv: Int?
     ) {
+        val currentThresholds = thresholds
         if (isPausedAfterReset()) {
             if (shouldStartEvent(batteryPercent, previousPercent, direction)) {
                 clearPausedAfterReset()
-            } else if (batteryPercent in (EVENT_LOW_PERCENT + 1) until EVENT_HIGH_PERCENT) {
+            } else if (batteryPercent in (currentThresholds.lowPercent + 1) until currentThresholds.highPercent) {
                 clearPausedAfterReset()
                 return
             } else {
@@ -389,14 +398,14 @@ class BatteryCapacityEstimator(private val context: Context) {
 
         when (direction) {
             CHARGING -> {
-                if (batteryPercent >= EVENT_HIGH_PERCENT) {
+                if (batteryPercent >= currentThresholds.highPercent) {
                     completeEvent(updatedActiveEvent, totalChargeMah)
                     clearActiveEvent()
                 }
             }
 
             DISCHARGING -> {
-                if (batteryPercent <= EVENT_LOW_PERCENT) {
+                if (batteryPercent <= currentThresholds.lowPercent) {
                     completeEvent(updatedActiveEvent, totalChargeMah)
                     clearActiveEvent()
                 }
@@ -441,28 +450,33 @@ class BatteryCapacityEstimator(private val context: Context) {
     }
 
     private fun shouldStartEvent(batteryPercent: Int, previousPercent: Int?, direction: Int): Boolean {
+        val currentThresholds = thresholds
         return when (direction) {
-            CHARGING -> batteryPercent == EVENT_LOW_PERCENT ||
+            CHARGING -> batteryPercent == currentThresholds.lowPercent ||
                     (previousPercent != null &&
-                            previousPercent < EVENT_LOW_PERCENT &&
-                            batteryPercent in (EVENT_LOW_PERCENT + 1) until EVENT_HIGH_PERCENT)
-            DISCHARGING -> batteryPercent == EVENT_HIGH_PERCENT ||
+                            previousPercent < currentThresholds.lowPercent &&
+                            batteryPercent in (currentThresholds.lowPercent + 1) until currentThresholds.highPercent)
+            DISCHARGING -> batteryPercent == currentThresholds.highPercent ||
                     (previousPercent != null &&
-                            previousPercent > EVENT_HIGH_PERCENT &&
-                            batteryPercent in (EVENT_LOW_PERCENT + 1) until EVENT_HIGH_PERCENT)
+                            previousPercent > currentThresholds.highPercent &&
+                            batteryPercent in (currentThresholds.lowPercent + 1) until currentThresholds.highPercent)
             else -> false
         }
     }
 
     private fun isAtCapacityEventArmingLevel(): Boolean {
+        val currentThresholds = thresholds
         val batteryPercent = prefs.getInt(LAST_BATTERY_PERCENT_KEY, UNKNOWN_PERCENT)
         return batteryPercent != UNKNOWN_PERCENT &&
-                (batteryPercent <= EVENT_LOW_PERCENT || batteryPercent >= EVENT_HIGH_PERCENT)
+                (batteryPercent <= currentThresholds.lowPercent || batteryPercent >= currentThresholds.highPercent)
     }
 
     private fun completeEvent(activeEvent: ActiveEvent, endChargeMah: Double) {
-        val capacityMah = (abs(endChargeMah - activeEvent.startChargeMah) * 100.0 / EVENT_PERCENT_SPAN)
-            .roundToInt()
+        val currentThresholds = thresholds
+        val capacityMah = extrapolateCapacityMah(
+            deltaMah = abs(endChargeMah - activeEvent.startChargeMah),
+            spanPercent = currentThresholds.spanPercent
+        )
         if (capacityMah <= 0) return
 
         val now = System.currentTimeMillis()
@@ -488,7 +502,9 @@ class BatteryCapacityEstimator(private val context: Context) {
             avgTempC = avgTempC,
             avgVoltageMv = avgVoltageMv,
             peukertK = peukertK,
-            peukertAdjustedCapacityMah = peukertAdjustedCapacityMah
+            peukertAdjustedCapacityMah = peukertAdjustedCapacityMah,
+            lowPercent = currentThresholds.lowPercent,
+            highPercent = currentThresholds.highPercent
         )
         appendDailyReading(now, peukertAdjustedCapacityMah ?: capacityMah)
         appendMovingAverageReading(now, peukertAdjustedCapacityMah ?: capacityMah)
@@ -504,9 +520,11 @@ class BatteryCapacityEstimator(private val context: Context) {
         avgTempC: Double?,
         avgVoltageMv: Double?,
         peukertK: Double?,
-        peukertAdjustedCapacityMah: Int?
+        peukertAdjustedCapacityMah: Int?,
+        lowPercent: Int,
+        highPercent: Int
     ) {
-        val header = "Time_date_start,Direction,mAh_start,Time_date_end,mAh_end,AvgCurrent_mA,AvgTemp_C,AvgVoltage_mV,PeukertK,PeukertAdjustedCapacity_mAh"
+        val header = "Time_date_start,Direction,mAh_start,Time_date_end,mAh_end,AvgCurrent_mA,AvgTemp_C,AvgVoltage_mV,PeukertK,PeukertAdjustedCapacity_mAh,LowPercent,HighPercent"
         val row = listOf(
             formatEventTimestamp(startTimestampMs),
             directionLabel(direction),
@@ -517,7 +535,9 @@ class BatteryCapacityEstimator(private val context: Context) {
             avgTempC?.let { String.format(Locale.US, "%.1f", it) } ?: "",
             avgVoltageMv?.let { String.format(Locale.US, "%.0f", it) } ?: "",
             peukertK?.let { String.format(Locale.US, "%.4f", it) } ?: "",
-            peukertAdjustedCapacityMah?.toString() ?: ""
+            peukertAdjustedCapacityMah?.toString() ?: "",
+            lowPercent.toString(),
+            highPercent.toString()
         ).joinToString(",")
 
         ensureEventsHeader(header)
@@ -547,12 +567,20 @@ class BatteryCapacityEstimator(private val context: Context) {
         if (lines.isEmpty() || lines.first() == header) return
         if (lines.first().startsWith("Time_date_start,")) {
             val migratedRows = lines.drop(1).map { line ->
-                val parts = line.split(",")
-                if (parts.size == 9) {
+                val voltageMigratedParts = line.split(",").let { parts ->
+                    if (parts.size == 9) {
                     // Old format had PeukertK immediately after AvgTemp_C. Insert blank AvgVoltage_mV.
-                    (parts.take(7) + "" + parts.drop(7)).joinToString(",")
+                        parts.take(7) + "" + parts.drop(7)
+                    } else {
+                        parts
+                    }
+                }
+                if (voltageMigratedParts.size == 10) {
+                    // Legacy rows were recorded using the original 25-75% capacity window.
+                    (voltageMigratedParts + CapacityThresholdPreference.DEFAULT_LOW_PERCENT.toString() +
+                            CapacityThresholdPreference.DEFAULT_HIGH_PERCENT.toString()).joinToString(",")
                 } else {
-                    line
+                    voltageMigratedParts.joinToString(",")
                 }
             }
             eventsFile.writeText((listOf(header) + migratedRows).joinToString("\n"))
@@ -828,9 +856,25 @@ class BatteryCapacityEstimator(private val context: Context) {
             val startCharge = parts[2].toDoubleOrNull() ?: return@mapNotNull null
             val endCharge = parts[4].toDoubleOrNull() ?: return@mapNotNull null
             val avgCurrent = parts[5].toDoubleOrNull() ?: return@mapNotNull null
-            val capacity = (abs(endCharge - startCharge) * 100.0 / EVENT_PERCENT_SPAN).roundToInt()
+            val capacity = extrapolateCapacityMah(
+                deltaMah = abs(endCharge - startCharge),
+                spanPercent = eventSpanPercent(parts, lowThresholdIndex = 10, highThresholdIndex = 11)
+            )
             PeukertEventReading(capacity, avgCurrent)
         }
+    }
+
+    private fun extrapolateCapacityMah(deltaMah: Double, spanPercent: Int = thresholds.spanPercent): Int {
+        return (deltaMah * 100.0 / spanPercent.coerceAtLeast(1)).roundToInt()
+    }
+
+    private fun eventSpanPercent(parts: List<String>, lowThresholdIndex: Int, highThresholdIndex: Int): Int {
+        val low = parts.getOrNull(lowThresholdIndex)?.toIntOrNull()
+            ?: CapacityThresholdPreference.DEFAULT_LOW_PERCENT
+        val high = parts.getOrNull(highThresholdIndex)?.toIntOrNull()
+            ?: CapacityThresholdPreference.DEFAULT_HIGH_PERCENT
+        return (high - low).takeIf { it > 0 }
+            ?: (CapacityThresholdPreference.DEFAULT_HIGH_PERCENT - CapacityThresholdPreference.DEFAULT_LOW_PERCENT)
     }
 
     private fun appendDailyReading(timestampMs: Long, capacityMah: Int) {
@@ -1082,9 +1126,6 @@ class BatteryCapacityEstimator(private val context: Context) {
         private const val MINIMUM_CURRENT_MA = 20.0
         private const val CHARGING = 1
         private const val DISCHARGING = -1
-        private const val EVENT_LOW_PERCENT = 25
-        private const val EVENT_HIGH_PERCENT = 75
-        private const val EVENT_PERCENT_SPAN = 50.0
         private const val MAX_STORED_DAYS = 400
         private const val WARNING_DROP_FRACTION = 0.01
         private const val MOVING_AVERAGE_READING_COUNT = 50

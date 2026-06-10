@@ -226,7 +226,8 @@ def build_manual():
         ("Reset foreground display", "Moves the floating display back to the center if it was dragged to an unreachable edge."),
         ("Calibration setup", "Starts the guided calibration flow. The button reads Start when inactive and ON while armed or running."),
         ("Light-theme foreground display", "Switches the foreground overlay and chart popups to a light beige theme with higher-contrast graph, table, button, and text colors."),
-        ("Reset graph at 25% / 75%", "Automatically starts a fresh graph segment when charging crosses up through 25% or discharging crosses down through 75%. This reset affects the graph display baseline, not the stored capacity history."),
+        ("Reset graph at capacity window", "Automatically starts a fresh graph segment when charging crosses up through the low threshold or discharging crosses down through the high threshold. This reset affects the graph display baseline, not the stored capacity history."),
+        ("Capacity window", "Sets the low and high battery percentages used for normal capacity estimates, status dots, graph reference lines, and optional graph reset points. The low threshold must be at least 20%, and the window must be at least 40% wide. For example, a 40% to 80% window uses measured mAh multiplied by 2.5."),
         ("Original capacity", "Stores the phone's rated battery capacity so the app can color capacity estimates relative to the original rating."),
         ("Monitor", "Starts or stops the normal monitoring service."),
     ])
@@ -263,7 +264,7 @@ def build_manual():
         "Tap the foreground display to open the graph popup. The popup shows the main accumulated mAh or mWh trace and an optional right-axis trace."
     )
     doc.add_paragraph(
-        "If Light-theme foreground display is enabled on the startup page, the graph popup, SOC curve popup, 25%-75% history table, event details, and calibration summary use a light chart theme. "
+        "If Light-theme foreground display is enabled on the startup page, the graph popup, SOC curve popup, charge-history table, event details, and calibration summary use a light chart theme. "
         "The light theme keeps stronger text, button, axis, and trace colors so the chart remains readable on the beige background."
     )
     add_key_value_table(doc, [
@@ -273,7 +274,7 @@ def build_manual():
         ("Lock / Unlock", "Locks or unlocks the foreground display position."),
         ("mAh / mWh", "Switches the main graph and accumulated readout between charge and energy."),
         ("Clr Data", "Opens a confirmation prompt to reset the accumulated mAh or mWh value to zero and start a new graph timeline."),
-        ("25-75 Hist", "Opens the recent 25%-75% capacity-estimate history. Tap a day in the table to view the events behind that daily value."),
+        ("Chrg Hist", "Opens the recent capacity-estimate history. Tap a day in the table to view the events behind that daily value."),
         ("degrees button", "Switches temperature display between degrees C and degrees F."),
         ("Display toggles", "Turn individual foreground-display fields on or off. The notification keeps showing the full live value set."),
         ("SOC Lin", "Opens the learned state-of-charge linearity view."),
@@ -303,7 +304,7 @@ def build_manual():
         "Battery percent, voltage, temperature, and current auto-scale for the visible data. Battery percent can extend above 100% only when manually zoomed.",
         "For mA mode, positive current is light green and negative current is orange, with a dashed zero-current reference line.",
         "When zoomed out, voltage, temperature, and current traces are smoothed for readability without changing the stored data.",
-        "When Batt % is selected, faint reference lines mark the 25% and 75% capacity-event thresholds.",
+        "When Batt % is selected, faint reference lines mark the configured low and high capacity-event thresholds.",
     ])
 
     doc.add_heading("6. Zooming and Moving the Graph", level=1)
@@ -331,17 +332,18 @@ def build_manual():
 
     doc.add_heading("8. Battery Capacity Event Logging", level=1)
     doc.add_paragraph(
-        "BatteryCurrent records qualifying charge and discharge sessions in the app private folder. Normal capacity estimates use completed sessions that span the useful 25% to 75% battery range. "
+        "BatteryCurrent records qualifying charge and discharge sessions in the app private folder. Normal capacity estimates use completed sessions that span the user-selected capacity window. "
+        "The default window is 25% to 75%, but it can be changed on the startup page. "
         "These estimates are stored and used as trend data, but they play a secondary role once a calibration result exists."
     )
     add_bullets(doc, [
-        "A charge event starts near 25% and completes when it reaches 75%.",
-        "A discharge event starts near 75% and completes when it reaches 25%.",
+        "A charge event starts near the low threshold and completes when it reaches the high threshold.",
+        "A discharge event starts near the high threshold and completes when it reaches the low threshold.",
         "Plugging or unplugging during a qualifying session cancels that session and waits for the next threshold crossing.",
         "Daily capacity estimates are stored separately and updated only from completed qualifying events.",
         "When a calibration result exists, the chart capacity line shows both the fixed calibration value and an adjusted value that reflects later trend movement.",
-        "Tap the 25-75 Hist button to review recent daily values. The list shows the most recent entries first and can be scrolled for older entries.",
-        "If no calibration result exists yet, the chart falls back to showing the 25%-75% extrapolated estimate.",
+        "Tap the Chrg Hist button to review recent daily values. The list shows the most recent entries first and can be scrolled for older entries.",
+        "If no calibration result exists yet, the chart falls back to showing the configured-window extrapolated estimate.",
     ])
 
     doc.add_heading("9. Calibration Setup", level=1)
@@ -361,7 +363,7 @@ def build_manual():
         "Calibration measures the 99% to 15% discharge range and computes capacity as discharged mAh divided by 0.84.",
         "If the charger is connected after measurement begins, the service is stopped, or the measurement is interrupted, the calibration is stopped and no incomplete row is written.",
         "Completed calibration rows are stored in battery_calibration_tests.csv with start and end times, discharged mAh, capacity estimate, average temperature, voltage, and current.",
-        "The chart shows Calibration battery capacity [date]: raw mAh and Adj: adjusted mAh. The raw value is the fixed result from the last controlled calibration. The adjusted value is a trend-aware estimate that moves gradually as later everyday-use measurements indicate capacity drifting up or down.",
+        "The chart shows Calibration battery capacity [date]: raw mAh and Adj: adjusted mAh. When the rated/original capacity is entered, the adjusted value also shows the percent difference from that rating. The raw value is the fixed result from the last controlled calibration. The adjusted value is a trend-aware estimate that moves gradually as later everyday-use measurements indicate capacity drifting up or down.",
         "Tap the calibration capacity line in the chart to open a compact table of the latest calibration result.",
     ])
 
@@ -407,7 +409,7 @@ def build_manual():
         ("Foreground display cannot move", "Use Reset foreground display to centre from the startup page, or open the graph popup and tap Unlock if the overlay is locked."),
         ("Graph looks crowded", "Use the X or Y zoom controls, pinch to zoom the selected axis, or collapse the menu buttons."),
         ("No capacity estimate yet", "The app needs completed qualifying charge or discharge sessions before daily estimates are available."),
-        ("No calibration result yet", "Run the guided calibration from 99% down to 15%. Until then, the chart uses the 25%-75% estimate when available."),
+        ("No calibration result yet", "Run the guided calibration from 99% down to 15%. Until then, the chart uses the configured-window estimate when available."),
         ("Calibration will not start", "Start only arms calibration when Android reports 100%. Charge fully, press Start while the battery still reads 100%, then disconnect the charger. The app begins measuring automatically at 99%."),
         ("Monitor button looks stale", "The startup page checks the live service heartbeat. If Android killed the service, the button returns to Start/OFF when reopened."),
         ("App was stopped", "Restart BatteryCurrent from the launcher. If the service was fully stopped, it cannot measure the period while it was not running."),

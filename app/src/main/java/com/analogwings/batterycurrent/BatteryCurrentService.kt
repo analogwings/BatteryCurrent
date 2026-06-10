@@ -734,10 +734,11 @@ class BatteryCurrentService : Service() {
         if (FullDischargeTest.isModeEnabled(this) || FullDischargeTest.isActive(this)) return
         if (previousPercent == null) return
 
+        val thresholds = CapacityThresholdPreference.load(this)
         val charging = averageMilliAmps > 20.0 || pluggedIn
         val discharging = averageMilliAmps < -20.0 || !pluggedIn
-        val crossedChargeStart = charging && previousPercent < 25 && currentPercent >= 25
-        val crossedDischargeStart = discharging && previousPercent > 75 && currentPercent <= 75
+        val crossedChargeStart = charging && previousPercent < thresholds.lowPercent && currentPercent >= thresholds.lowPercent
+        val crossedDischargeStart = discharging && previousPercent > thresholds.highPercent && currentPercent <= thresholds.highPercent
         val crossedThreshold = crossedChargeStart || crossedDischargeStart
         if (!crossedThreshold) return
 
@@ -1519,7 +1520,8 @@ class BatteryCurrentService : Service() {
             selectedEnergyUnit(),
             graphDisplayZeroTimeMs(),
             selectedRightAxisMode(),
-            isFahrenheitSelected()
+            isFahrenheitSelected(),
+            CapacityThresholdPreference.load(this)
         )
         updateCapacityEstimatePanel(capacityPanel)
         updateGraphMenuVisibility(container)
@@ -1746,7 +1748,7 @@ class BatteryCurrentService : Service() {
             val label = "Calibration battery capacity [${fdResult.startTimestampText}]: "
             val rawValue = String.format(Locale.US, "%dmAh", fdResult.capacityEstimateMah)
             val adjustedValue = adjustedFullDischargeCapacity(fdResult)
-            val suffix = String.format(Locale.US, " Adj: %dmAh", adjustedValue)
+            val suffix = String.format(Locale.US, " Adj: %dmAh%s", adjustedValue, adjustedCapacityDegradationText(adjustedValue))
             return CapacityLine(
                 text = label + rawValue + suffix,
                 valueStart = label.length,
@@ -1761,6 +1763,14 @@ class BatteryCurrentService : Service() {
             valueStart = label.length,
             valueColor = estimateMah?.let { capacityEstimateColor(it) } ?: palette.cool
         )
+    }
+
+    private fun adjustedCapacityDegradationText(adjustedCapacityMah: Int): String {
+        val originalMah = BatteryCapacityReference.originalCapacityMah(this) ?: return ""
+        if (originalMah <= 0) return ""
+
+        val degradationPercent = ((originalMah - adjustedCapacityMah) * 100.0) / originalMah
+        return String.format(Locale.US, " (%+.1f%%)", -degradationPercent)
     }
 
     private fun adjustedFullDischargeCapacity(fdResult: FullDischargeTest.Result): Int {
@@ -2952,6 +2962,10 @@ class BatteryCurrentService : Service() {
         private var zeroTimestampMs = 0L
         private var rightAxisMode: RightAxisMode? = null
         private var useFahrenheit = false
+        private var capacityThresholds = CapacityThresholdPreference.Thresholds(
+            CapacityThresholdPreference.DEFAULT_LOW_PERCENT,
+            CapacityThresholdPreference.DEFAULT_HIGH_PERCENT
+        )
         var onRightAxisLabelClick: (() -> Unit)? = null
         var onViewportChanged: (() -> Unit)? = null
         var onSingleFingerDragDelta: ((Int, Int) -> Unit)? = null
@@ -3111,12 +3125,14 @@ class BatteryCurrentService : Service() {
             unit: String,
             zeroTimeMs: Long,
             newRightAxisMode: RightAxisMode?,
-            newUseFahrenheit: Boolean
+            newUseFahrenheit: Boolean,
+            newCapacityThresholds: CapacityThresholdPreference.Thresholds
         ) {
             points.clear()
             points.addAll(newPoints)
             displayUnit = unit
             zeroTimestampMs = zeroTimeMs
+            capacityThresholds = newCapacityThresholds
             if (rightAxisMode != newRightAxisMode) {
                 customRightAxisMin = null
                 customRightAxisMax = null
@@ -3663,14 +3679,16 @@ class BatteryCurrentService : Service() {
 
         private fun drawBatteryThresholdLines(canvas: Canvas, scale: RightAxisScale) {
             if (rightAxisMode != RightAxisMode.BATTERY) return
-            if (25.0 !in scale.min..scale.max && 75.0 !in scale.min..scale.max) return
+            val lowThreshold = capacityThresholds.lowPercent.toDouble()
+            val highThreshold = capacityThresholds.highPercent.toDouble()
+            if (lowThreshold !in scale.min..scale.max && highThreshold !in scale.min..scale.max) return
 
-            if (25.0 in scale.min..scale.max) {
-                val lowY = yForRightAxisValue(25.0, scale)
+            if (lowThreshold in scale.min..scale.max) {
+                val lowY = yForRightAxisValue(lowThreshold, scale)
                 canvas.drawLine(plotBounds.left, lowY, plotBounds.right, lowY, batteryLowThresholdPaint)
             }
-            if (75.0 in scale.min..scale.max) {
-                val highY = yForRightAxisValue(75.0, scale)
+            if (highThreshold in scale.min..scale.max) {
+                val highY = yForRightAxisValue(highThreshold, scale)
                 canvas.drawLine(plotBounds.left, highY, plotBounds.right, highY, batteryHighThresholdPaint)
             }
         }
