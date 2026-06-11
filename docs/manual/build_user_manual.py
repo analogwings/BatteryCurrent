@@ -273,11 +273,11 @@ def build_manual():
         ("Stop", "Stops monitoring. Use this when you want to fully stop the app."),
         ("Lock / Unlock", "Locks or unlocks the foreground display position."),
         ("mAh / mWh", "Switches the main graph and accumulated readout between charge and energy."),
+        ("12h / 24h", "Switches clock-time x-axis labels between 12-hour and 24-hour format. Long-press the x-axis to switch between elapsed time and clock time."),
         ("Clr Data", "Opens a confirmation prompt to reset the accumulated mAh or mWh value to zero and start a new graph timeline."),
-        ("Chrg Hist", "Opens the recent capacity-estimate history. Tap a day in the table to view the events behind that daily value."),
+        ("Stats", "Opens a separate statistics page with equivalent charge/discharge cycles, average C-rate, raw capacity, capacity normalized to a 0.2C reference current, and shortcuts to Charge History and SOC Linearity."),
         ("degrees button", "Switches temperature display between degrees C and degrees F."),
         ("Display toggles", "Turn individual foreground-display fields on or off. The notification keeps showing the full live value set."),
-        ("SOC Lin", "Opens the learned state-of-charge linearity view."),
         ("Collapse arrow", "Collapses or expands the menu buttons so the user can leave only the graph visible."),
     ])
 
@@ -305,6 +305,7 @@ def build_manual():
         "For mA mode, positive current is light green and negative current is orange, with a dashed zero-current reference line.",
         "When zoomed out, voltage, temperature, and current traces are smoothed for readability without changing the stored data.",
         "When Batt % is selected, faint reference lines mark the configured low and high capacity-event thresholds.",
+        "Long-press the x-axis labels to switch between elapsed time and actual clock time. The 12h/24h button controls clock label format.",
     ])
 
     doc.add_heading("6. Zooming and Moving the Graph", level=1)
@@ -342,7 +343,8 @@ def build_manual():
         "Plugging or unplugging during a qualifying session cancels that session and waits for the next threshold crossing.",
         "Daily capacity estimates are stored separately and updated only from completed qualifying events.",
         "When a calibration result exists, the chart capacity line shows both the fixed calibration value and an adjusted value that reflects later trend movement.",
-        "Tap the Chrg Hist button to review recent daily values. The list shows the most recent entries first and can be scrolled for older entries.",
+        "Tap the Stats button to review equivalent full cycles and capacity statistics. The 0.2C-normalized capacity uses the battery capacity reference and learned load sensitivity so low-current discharge is not treated as directly equivalent to higher-current discharge.",
+        "The Stats page also contains shortcuts for Charge History and SOC Linearity, keeping the main graph controls less crowded.",
         "If no calibration result exists yet, the chart falls back to showing the configured-window extrapolated estimate.",
     ])
 

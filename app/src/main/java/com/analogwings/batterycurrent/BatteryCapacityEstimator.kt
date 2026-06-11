@@ -59,6 +59,27 @@ class BatteryCapacityEstimator(private val context: Context) {
         val isFittedBucketAverage: Boolean = false
     )
 
+    data class CapacityStats(
+        val referenceCapacityMah: Int?,
+        val referenceCurrentMa: Double?,
+        val peukertK: Double?,
+        val chargeEquivalentCycles: Double,
+        val dischargeEquivalentCycles: Double,
+        val chargeStats: DirectionStats,
+        val dischargeStats: DirectionStats
+    )
+
+    data class DirectionStats(
+        val eventCount: Int,
+        val averageCurrentMa: Double?,
+        val averageCRate: Double?,
+        val averageRawCapacityMah: Int?,
+        val averageCapacityAtReferenceCurrentMah: Int?,
+        val lowRateEventCount: Int,
+        val nearReferenceEventCount: Int,
+        val highRateEventCount: Int
+    )
+
     private data class SocBucketSample(
         val timestampMs: Long,
         val bucketStartPct: Int,
@@ -134,6 +155,7 @@ class BatteryCapacityEstimator(private val context: Context) {
         val direction = if (averageMilliAmps > 0.0) CHARGING else DISCHARGING
         val previousPercent = prefs.getInt(LAST_BATTERY_PERCENT_KEY, UNKNOWN_PERCENT)
             .takeIf { it != UNKNOWN_PERCENT }
+        updateEquivalentCycles(batteryPercent, previousPercent, direction)
         updateSocBucketTable(batteryPercent, previousPercent, totalChargeMah, direction, averageMilliAmps, temperatureC, voltageMv)
         processEventSample(batteryPercent, previousPercent, totalChargeMah, direction, averageMilliAmps, temperatureC, voltageMv)
         prefs.edit().putInt(LAST_BATTERY_PERCENT_KEY, batteryPercent).apply()
@@ -197,9 +219,35 @@ class BatteryCapacityEstimator(private val context: Context) {
         return recentDailyWeightedEstimate(limit)
     }
 
+    fun capacityStats(): CapacityStats {
+        val referenceCapacity = BatteryCapacityReference.originalCapacityMah(context)
+            ?: recentDailyWeightedEstimate()
+            ?: latestDailyEstimate()
+        val referenceCurrent = referenceCapacity?.let { it * REFERENCE_C_RATE }
+        val peukertK = latestStoredPeukertK()
+        val events = readCapacityEvents()
+        return CapacityStats(
+            referenceCapacityMah = referenceCapacity,
+            referenceCurrentMa = referenceCurrent,
+            peukertK = peukertK,
+            chargeEquivalentCycles = prefs.getFloat(CHARGE_EQUIVALENT_CYCLES_KEY, 0f).toDouble(),
+            dischargeEquivalentCycles = prefs.getFloat(DISCHARGE_EQUIVALENT_CYCLES_KEY, 0f).toDouble(),
+            chargeStats = buildDirectionStats(events.filter { it.direction.equals("charge", ignoreCase = true) }, referenceCapacity, referenceCurrent, peukertK),
+            dischargeStats = buildDirectionStats(events.filter { it.direction.equals("discharge", ignoreCase = true) }, referenceCapacity, referenceCurrent, peukertK)
+        )
+    }
+
     fun eventsForDay(dayTimestampMs: Long): List<CapacityEventSummary> {
-        if (!eventsFile.exists()) return emptyList()
         val targetDay = dayStartMs(dayTimestampMs)
+        return readCapacityEvents()
+            .filter { event ->
+                dayStartMs(event.startTimestampMs) == targetDay || dayStartMs(event.endTimestampMs) == targetDay
+            }
+            .sortedBy { it.startTimestampMs }
+    }
+
+    private fun readCapacityEvents(): List<CapacityEventSummary> {
+        if (!eventsFile.exists()) return emptyList()
         val lines = eventsFile.readText()
             .replace("\\n", "\n")
             .lines()
@@ -230,9 +278,6 @@ class BatteryCapacityEstimator(private val context: Context) {
             val parts = line.split(",")
             val startTimestamp = parseEventTimestamp(parts.getOrNull(startIndex)?.trim()) ?: return@mapNotNull null
             val endTimestamp = parseEventTimestamp(parts.getOrNull(endIndex)?.trim()) ?: startTimestamp
-            if (dayStartMs(startTimestamp) != targetDay && dayStartMs(endTimestamp) != targetDay) {
-                return@mapNotNull null
-            }
 
             val startMah = parts.getOrNull(startMahIndex)?.toDoubleOrNull() ?: return@mapNotNull null
             val endMah = parts.getOrNull(endMahIndex)?.toDoubleOrNull() ?: return@mapNotNull null
@@ -254,6 +299,38 @@ class BatteryCapacityEstimator(private val context: Context) {
                 peukertAdjustedCapacityMah = parts.getOrNull(adjustedIndex)?.toIntOrNull()
             )
         }.sortedBy { it.startTimestampMs }
+    }
+
+    private fun buildDirectionStats(
+        events: List<CapacityEventSummary>,
+        referenceCapacityMah: Int?,
+        referenceCurrentMa: Double?,
+        peukertK: Double?
+    ): DirectionStats {
+        if (events.isEmpty()) {
+            return DirectionStats(0, null, null, null, null, 0, 0, 0)
+        }
+
+        val currents = events.mapNotNull { it.avgCurrentMa }
+        val averageCurrent = currents.takeIf { it.isNotEmpty() }?.average()
+        val normalizedCapacities = events.mapNotNull { event ->
+            normalizedCapacityAtReferenceCurrent(event.capacityEstimateMah, event.avgCurrentMa, referenceCurrentMa, peukertK)
+        }
+        val cRates = if (referenceCapacityMah != null && referenceCapacityMah > 0) {
+            currents.map { it / referenceCapacityMah }
+        } else {
+            emptyList()
+        }
+        return DirectionStats(
+            eventCount = events.size,
+            averageCurrentMa = averageCurrent,
+            averageCRate = cRates.takeIf { it.isNotEmpty() }?.average(),
+            averageRawCapacityMah = events.map { it.capacityEstimateMah }.average().roundToInt(),
+            averageCapacityAtReferenceCurrentMah = normalizedCapacities.takeIf { it.isNotEmpty() }?.average()?.roundToInt(),
+            lowRateEventCount = cRates.count { it < LOW_C_RATE_BOUND },
+            nearReferenceEventCount = cRates.count { it in LOW_C_RATE_BOUND..HIGH_C_RATE_BOUND },
+            highRateEventCount = cRates.count { it > HIGH_C_RATE_BOUND }
+        )
     }
 
     fun socBucketSummaries(): List<SocBucketSummary> {
@@ -561,6 +638,21 @@ class BatteryCapacityEstimator(private val context: Context) {
         return updatedEvent
     }
 
+    private fun updateEquivalentCycles(batteryPercent: Int, previousPercent: Int?, direction: Int) {
+        if (previousPercent == null || previousPercent !in 0..100 || batteryPercent !in 0..100) return
+
+        val percentDelta = when {
+            direction == CHARGING && batteryPercent > previousPercent -> batteryPercent - previousPercent
+            direction == DISCHARGING && batteryPercent < previousPercent -> previousPercent - batteryPercent
+            else -> 0
+        }
+        if (percentDelta <= 0) return
+
+        val key = if (direction == CHARGING) CHARGE_EQUIVALENT_CYCLES_KEY else DISCHARGE_EQUIVALENT_CYCLES_KEY
+        val updatedCycles = prefs.getFloat(key, 0f).toDouble() + percentDelta / 100.0
+        prefs.edit().putFloat(key, updatedCycles.toFloat()).apply()
+    }
+
     private fun ensureEventsHeader(header: String) {
         if (!eventsFile.exists() || eventsFile.length() == 0L) return
         val lines = eventsFile.readLines()
@@ -844,6 +936,20 @@ class BatteryCapacityEstimator(private val context: Context) {
         if (capacityMah <= 0 || avgCurrentMa == null || peukertK == null) return null
         if (avgCurrentMa < MINIMUM_PEUKERT_CURRENT_MA) return null
         return (capacityMah * (avgCurrentMa / PEUKERT_REFERENCE_CURRENT_MA).pow(peukertK - 1.0))
+            .roundToInt()
+            .takeIf { it > 0 }
+    }
+
+    private fun normalizedCapacityAtReferenceCurrent(
+        capacityMah: Int,
+        avgCurrentMa: Double?,
+        referenceCurrentMa: Double?,
+        peukertK: Double?
+    ): Int? {
+        if (capacityMah <= 0 || avgCurrentMa == null || referenceCurrentMa == null) return null
+        if (avgCurrentMa < MINIMUM_PEUKERT_CURRENT_MA || referenceCurrentMa <= 0.0) return null
+        val k = peukertK ?: 1.0
+        return (capacityMah * (avgCurrentMa / referenceCurrentMa).pow(k - 1.0))
             .roundToInt()
             .takeIf { it > 0 }
     }
@@ -1140,6 +1246,8 @@ class BatteryCapacityEstimator(private val context: Context) {
         private const val ACTIVE_EVENT_VOLTAGE_SUM_KEY = "active_event_voltage_sum_mv"
         private const val EVENT_PAUSED_AFTER_RESET_KEY = "event_paused_after_reset"
         private const val LAST_BATTERY_PERCENT_KEY = "last_battery_percent"
+        private const val CHARGE_EQUIVALENT_CYCLES_KEY = "charge_equivalent_cycles"
+        private const val DISCHARGE_EQUIVALENT_CYCLES_KEY = "discharge_equivalent_cycles"
         private const val UNKNOWN_PERCENT = -1
         private const val WARNING_REFERENCE_TIMESTAMP_KEY = "warning_reference_timestamp_ms"
         private const val WARNING_REFERENCE_CAPACITY_KEY = "warning_reference_capacity_mah"
@@ -1165,5 +1273,8 @@ class BatteryCapacityEstimator(private val context: Context) {
         private const val PEUKERT_K_LEARNING_RATE = 0.35
         private const val PEUKERT_K_MIN = 1.0
         private const val PEUKERT_K_MAX = 1.30
+        private const val REFERENCE_C_RATE = 0.2
+        private const val LOW_C_RATE_BOUND = 0.15
+        private const val HIGH_C_RATE_BOUND = 0.25
     }
 }

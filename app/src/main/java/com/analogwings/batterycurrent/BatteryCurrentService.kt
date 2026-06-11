@@ -32,6 +32,7 @@ import android.text.SpannedString
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
+import android.view.ViewConfiguration
 import android.view.WindowManager
 import android.widget.Button
 import android.widget.LinearLayout
@@ -80,6 +81,10 @@ class BatteryCurrentService : Service() {
         private const val RIGHT_AXIS_TEMPERATURE = "temperature"
         private const val RIGHT_AXIS_VOLTAGE = "voltage"
         private const val RIGHT_AXIS_CURRENT = "current"
+        private const val X_AXIS_MODE_ELAPSED = "elapsed"
+        private const val X_AXIS_MODE_CLOCK = "clock"
+        private const val CLOCK_FORMAT_12 = "12"
+        private const val CLOCK_FORMAT_24 = "24"
     }
 
     private val channelId = "battery_current_silent_channel_v2"
@@ -99,6 +104,7 @@ class BatteryCurrentService : Service() {
     private var capacityEventDetailsPopupView: View? = null
     private var socCurvePopupView: View? = null
     private var calibrationResultPopupView: View? = null
+    private var capacityStatsPopupView: View? = null
     private var graphMenuCollapsed = false
     private val capacityEstimator by lazy { BatteryCapacityEstimator(this) }
 
@@ -130,6 +136,8 @@ class BatteryCurrentService : Service() {
     private val displayBatteryKey = "display_battery"
     private val temperatureUnitKey = "temperature_unit"
     private val rightAxisModeKey = "right_axis_mode"
+    private val xAxisModeKey = "x_axis_mode"
+    private val clockFormatKey = "clock_format"
 
     // Overlay display styling follows the graph popup palette.
     private val overlayTextColor = Color.WHITE
@@ -833,6 +841,47 @@ class BatteryCurrentService : Service() {
         refreshGraphOverlay()
     }
 
+    private fun selectedXAxisMode(): String {
+        return getSharedPreferences(displayPrefsName, Context.MODE_PRIVATE)
+            .getString(xAxisModeKey, X_AXIS_MODE_ELAPSED)
+            ?.takeIf { it == X_AXIS_MODE_ELAPSED || it == X_AXIS_MODE_CLOCK }
+            ?: X_AXIS_MODE_ELAPSED
+    }
+
+    private fun isClockXAxisSelected(): Boolean = selectedXAxisMode() == X_AXIS_MODE_CLOCK
+
+    private fun toggleXAxisMode() {
+        val nextMode = if (isClockXAxisSelected()) X_AXIS_MODE_ELAPSED else X_AXIS_MODE_CLOCK
+        getSharedPreferences(displayPrefsName, Context.MODE_PRIVATE)
+            .edit()
+            .putString(xAxisModeKey, nextMode)
+            .apply()
+        Toast.makeText(
+            this,
+            if (nextMode == X_AXIS_MODE_CLOCK) "X-axis: clock time" else "X-axis: elapsed time",
+            Toast.LENGTH_SHORT
+        ).show()
+        updateGraphOverlay()
+    }
+
+    private fun selectedClockFormat(): String {
+        return getSharedPreferences(displayPrefsName, Context.MODE_PRIVATE)
+            .getString(clockFormatKey, CLOCK_FORMAT_12)
+            ?.takeIf { it == CLOCK_FORMAT_12 || it == CLOCK_FORMAT_24 }
+            ?: CLOCK_FORMAT_12
+    }
+
+    private fun is24HourClockSelected(): Boolean = selectedClockFormat() == CLOCK_FORMAT_24
+
+    private fun toggleClockFormat() {
+        val nextFormat = if (is24HourClockSelected()) CLOCK_FORMAT_12 else CLOCK_FORMAT_24
+        getSharedPreferences(displayPrefsName, Context.MODE_PRIVATE)
+            .edit()
+            .putString(clockFormatKey, nextFormat)
+            .apply()
+        updateGraphOverlay()
+    }
+
     private fun refreshGraphOverlay() {
         if (graphOverlayView == null) return
         removeGraphOverlay()
@@ -1338,6 +1387,7 @@ class BatteryCurrentService : Service() {
 
         val graphView = EnergyGraphView(this, palette).apply {
             onRightAxisLabelClick = { cycleRightAxisMode() }
+            onXAxisLongPress = { toggleXAxisMode() }
             onViewportChanged = { updateGraphZoomResetButton() }
             onSingleFingerDragDelta = { dx, dy ->
                 val view = graphOverlayView
@@ -1441,7 +1491,7 @@ class BatteryCurrentService : Service() {
             })
 
             addView(summaryView.apply {
-                setPadding(0, 10, 0, 18)
+                setPadding(0, 8, 0, 12)
                 setSingleLine(true)
             })
 
@@ -1457,7 +1507,7 @@ class BatteryCurrentService : Service() {
             addView(LinearLayout(this@BatteryCurrentService).apply {
                 orientation = LinearLayout.VERTICAL
                 gravity = Gravity.CENTER
-                addView(graphView, LinearLayout.LayoutParams(878, 654))
+                addView(graphView, LinearLayout.LayoutParams(878, 596))
             })
 
             addView(createGraphMenuCollapseToggle())
@@ -1521,7 +1571,9 @@ class BatteryCurrentService : Service() {
             graphDisplayZeroTimeMs(),
             selectedRightAxisMode(),
             isFahrenheitSelected(),
-            CapacityThresholdPreference.load(this)
+            CapacityThresholdPreference.load(this),
+            selectedXAxisMode(),
+            is24HourClockSelected()
         )
         updateCapacityEstimatePanel(capacityPanel)
         updateGraphMenuVisibility(container)
@@ -1541,9 +1593,9 @@ class BatteryCurrentService : Service() {
                 setTextColor(graphCollapseArrowColor())
                 gravity = Gravity.CENTER
                 minWidth = 72
-                minHeight = 44
+                minHeight = 34
                 includeFontPadding = false
-                setPadding(22, 6, 22, 6)
+                setPadding(22, 0, 22, 0)
                 text = if (graphMenuCollapsed) "\u25BC" else "\u25B2"
                 isClickable = true
                 setOnClickListener {
@@ -1709,29 +1761,10 @@ class BatteryCurrentService : Service() {
     private fun buildCapacityEstimateText(estimateMah: Int?): SpannableString {
         val palette = graphPalette()
         val capacityLine = buildPrimaryCapacityLine(estimateMah)
-        val peukertLabel = "\nBatt. capacity load senstvty: "
-        val peukertValue = latestPeukertConstant()
-            ?.let { value -> String.format(Locale.US, "k=%.2f (%s)", value, peukertSensitivityMessage(value)) }
-            ?: "not enough data"
-        val fullText = capacityLine.text + peukertLabel + peukertValue
-        val peukertLabelStart = capacityLine.text.length
-        val peukertValueStart = peukertLabelStart + peukertLabel.length
 
-        return SpannableString(fullText).apply {
+        return SpannableString(capacityLine.text).apply {
             setSpan(ForegroundColorSpan(palette.estimateLabel), 0, capacityLine.valueStart, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
             setSpan(ForegroundColorSpan(capacityLine.valueColor), capacityLine.valueStart, capacityLine.text.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
-            setSpan(
-                ForegroundColorSpan(palette.estimateLabel),
-                peukertLabelStart,
-                peukertValueStart,
-                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
-            )
-            setSpan(
-                ForegroundColorSpan(palette.cool),
-                peukertValueStart,
-                fullText.length,
-                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
-            )
         }
     }
 
@@ -1745,7 +1778,7 @@ class BatteryCurrentService : Service() {
         val palette = graphPalette()
         val fdResult = FullDischargeTest.latestResult(this)
         if (fdResult != null) {
-            val label = "Calibration battery capacity [${fdResult.startTimestampText}]: "
+            val label = "Calibration battery capacity [${fdResult.startTimestampText}]:\n"
             val rawValue = String.format(Locale.US, "%dmAh", fdResult.capacityEstimateMah)
             val adjustedValue = adjustedFullDischargeCapacity(fdResult)
             val suffix = String.format(Locale.US, " Adj: %dmAh%s", adjustedValue, adjustedCapacityDegradationText(adjustedValue))
@@ -2227,6 +2260,119 @@ class BatteryCurrentService : Service() {
         return lines.joinToString("\n")
     }
 
+    private fun showCapacityStatsPopup() {
+        if (capacityStatsPopupView != null) {
+            // Opening Stats should be idempotent. Some devices/emulators can deliver
+            // a second click during overlay transitions; do not interpret that as close.
+            return
+        }
+
+        val stats = capacityEstimator.capacityStats()
+        val palette = graphPalette()
+        val popup = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = graphPopupBackground(palette, cornerRadius = 12f)
+            setPadding(18, 14, 18, 14)
+            elevation = 34f
+
+            addView(LinearLayout(this@BatteryCurrentService).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                addView(TextView(this@BatteryCurrentService).apply {
+                    text = "Capacity statistics"
+                    textSize = 13f
+                    setTypeface(typeface, Typeface.BOLD)
+                    setTextColor(palette.text)
+                }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+                addView(Button(this@BatteryCurrentService).apply {
+                    styleCloseButton(this, palette)
+                    text = "x"
+                    setOnClickListener { removeCapacityStatsPopup() }
+                })
+            })
+
+            addView(TextView(this@BatteryCurrentService).apply {
+                text = "Capacity normalized to 0.2C uses completed capacity-window events and the learned load sensitivity."
+                textSize = 11f
+                setTextColor(palette.mutedText)
+                setPadding(0, 6, 0, 8)
+            })
+
+            addView(LinearLayout(this@BatteryCurrentService).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER
+                setPadding(0, 0, 0, 8)
+
+                addView(Button(this@BatteryCurrentService).apply {
+                    styleGraphMenuButton(this)
+                    text = "Chrg Hist"
+                    setOnClickListener {
+                        removeCapacityStatsPopup()
+                        showCapacityHistoryPopup()
+                    }
+                })
+                addView(Button(this@BatteryCurrentService).apply {
+                    styleGraphMenuButton(this)
+                    text = "SOC Lin"
+                    setOnClickListener {
+                        removeCapacityStatsPopup()
+                        showSocCurvePopup()
+                    }
+                })
+            })
+
+            addCapacityEventLine("Reference capacity", stats.referenceCapacityMah?.let { "${it}mAh" } ?: "n/a")
+            addCapacityEventLine("0.2C reference", stats.referenceCurrentMa?.let { String.format(Locale.US, "%.0fmA", it) } ?: "n/a")
+            addCapacityEventLine("Load sensitivity", stats.peukertK?.let { String.format(Locale.US, "k=%.2f", it) } ?: "learning")
+            addCapacityEventLine("Charge eq. cycles", String.format(Locale.US, "%.2f", stats.chargeEquivalentCycles))
+            addCapacityEventLine("Discharge eq. cycles", String.format(Locale.US, "%.2f", stats.dischargeEquivalentCycles))
+
+            addStatsSection("Discharge", stats.dischargeStats)
+            addStatsSection("Charge", stats.chargeStats)
+        }
+
+        capacityStatsPopupView = popup
+        val params = WindowManager.LayoutParams(
+            820,
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            overlayType(),
+            WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
+            PixelFormat.TRANSLUCENT
+        ).apply {
+            gravity = Gravity.CENTER
+        }
+
+        try {
+            windowManager?.addView(popup, params)
+        } catch (_: Exception) {
+            capacityStatsPopupView = null
+        }
+    }
+
+    private fun LinearLayout.addStatsSection(
+        title: String,
+        stats: BatteryCapacityEstimator.DirectionStats
+    ) {
+        val palette = graphPalette()
+        addView(TextView(this@BatteryCurrentService).apply {
+            text = title
+            textSize = 12f
+            setTypeface(Typeface.MONOSPACE, Typeface.BOLD)
+            setTextColor(palette.estimateLabel)
+            setPadding(0, 10, 0, 2)
+        })
+        addCapacityEventLine("Events", stats.eventCount.toString())
+        addCapacityEventLine("Avg current", stats.averageCurrentMa?.let { String.format(Locale.US, "%.0fmA", it) } ?: "n/a")
+        addCapacityEventLine("Avg C-rate", stats.averageCRate?.let { String.format(Locale.US, "%.2fC", it) } ?: "n/a")
+        addCapacityEventLine("Raw capacity", stats.averageRawCapacityMah?.let { "${it}mAh" } ?: "n/a")
+        addCapacityEventLine("@0.2C capacity", stats.averageCapacityAtReferenceCurrentMah?.let { "${it}mAh" } ?: "n/a")
+        addCapacityEventLine("C-rate bins", String.format(Locale.US, "<0.15C:%d  0.15-0.25C:%d  >0.25C:%d",
+            stats.lowRateEventCount,
+            stats.nearReferenceEventCount,
+            stats.highRateEventCount
+        ))
+    }
+
     private fun removeSocCurvePopup() {
         val view = socCurvePopupView ?: return
         (view.parent as? LinearLayout)?.removeView(view)
@@ -2239,6 +2385,16 @@ class BatteryCurrentService : Service() {
         calibrationResultPopupView = null
     }
 
+    private fun removeCapacityStatsPopup() {
+        val view = capacityStatsPopupView ?: return
+        try {
+            windowManager?.removeView(view)
+        } catch (_: Exception) {
+            (view.parent as? LinearLayout)?.removeView(view)
+        }
+        capacityStatsPopupView = null
+    }
+
     private fun removeCapacityEventDetailsPopup() {
         val view = capacityEventDetailsPopupView ?: return
         (view.parent as? LinearLayout)?.removeView(view)
@@ -2249,6 +2405,7 @@ class BatteryCurrentService : Service() {
         removeCapacityEventDetailsPopup()
         removeSocCurvePopup()
         removeCalibrationResultPopup()
+        removeCapacityStatsPopup()
         val view = capacityHistoryPopupView ?: return
         (view.parent as? LinearLayout)?.removeView(view)
         capacityHistoryPopupView = null
@@ -2257,7 +2414,7 @@ class BatteryCurrentService : Service() {
     private fun createDisplayTogglePanel(): LinearLayout {
         return LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(0, 10, 0, 0)
+            setPadding(0, 0, 0, 0)
 
             addView(createDisplayToggleRow(
                 "Time" to displayTimeKey,
@@ -2275,7 +2432,7 @@ class BatteryCurrentService : Service() {
     private fun createGraphActionPanel(): LinearLayout {
         return LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(0, 18, 0, 0)
+            setPadding(0, 8, 0, 0)
 
             addView(LinearLayout(this@BatteryCurrentService).apply {
                 orientation = LinearLayout.HORIZONTAL
@@ -2310,9 +2467,9 @@ class BatteryCurrentService : Service() {
                 gravity = Gravity.CENTER
 
                 addView(createEnergyUnitToggleButton())
+                addView(createClockFormatToggleButton())
                 addView(createResetButton())
-                addView(createCapacityHistoryButton())
-                addView(createSocCurveButton())
+                addView(createCapacityStatsButton())
             })
         }
     }
@@ -2345,6 +2502,21 @@ class BatteryCurrentService : Service() {
 
     private fun setEnergyUnitToggleText(button: Button) {
         button.text = selectedEnergyUnit()
+    }
+
+    private fun createClockFormatToggleButton(): Button {
+        return Button(this).apply {
+            styleGraphMenuButton(this)
+            setClockFormatToggleText(this)
+            setOnClickListener {
+                toggleClockFormat()
+                setClockFormatToggleText(this)
+            }
+        }
+    }
+
+    private fun setClockFormatToggleText(button: Button) {
+        button.text = if (is24HourClockSelected()) "24h" else "12h"
     }
 
     private fun energyDisplayLabel(): String {
@@ -2382,6 +2554,14 @@ class BatteryCurrentService : Service() {
         }
     }
 
+    private fun createCapacityStatsButton(): Button {
+        return Button(this).apply {
+            styleGraphMenuButton(this)
+            text = "Stats"
+            setOnClickListener { showCapacityStatsPopup() }
+        }
+    }
+
     private fun showResetConfirmation(row: LinearLayout, resetButton: Button) {
         if (row.indexOfChild(resetButton) < 0) return
 
@@ -2416,9 +2596,9 @@ class BatteryCurrentService : Service() {
     private fun restoreSecondaryActionRow(row: LinearLayout) {
         row.removeAllViews()
         row.addView(createEnergyUnitToggleButton())
+        row.addView(createClockFormatToggleButton())
         row.addView(createResetButton())
-        row.addView(createCapacityHistoryButton())
-        row.addView(createSocCurveButton())
+        row.addView(createCapacityStatsButton())
     }
 
     private fun createDisplayToggleRow(vararg toggles: Pair<String, String>): LinearLayout {
@@ -2586,6 +2766,7 @@ class BatteryCurrentService : Service() {
         removeCapacityHistoryPopup()
         removeSocCurvePopup()
         removeCalibrationResultPopup()
+        removeCapacityStatsPopup()
         val view = graphOverlayView ?: return
         try {
             windowManager?.removeView(view)
@@ -2607,6 +2788,7 @@ class BatteryCurrentService : Service() {
 
     private fun removeOverlay() {
         removeCapacityHistoryPopup()
+        removeCapacityStatsPopup()
         removeGraphOverlay()
         val view = overlayView
         if (view != null) {
@@ -2962,11 +3144,14 @@ class BatteryCurrentService : Service() {
         private var zeroTimestampMs = 0L
         private var rightAxisMode: RightAxisMode? = null
         private var useFahrenheit = false
+        private var xAxisMode = X_AXIS_MODE_ELAPSED
+        private var use24HourClock = false
         private var capacityThresholds = CapacityThresholdPreference.Thresholds(
             CapacityThresholdPreference.DEFAULT_LOW_PERCENT,
             CapacityThresholdPreference.DEFAULT_HIGH_PERCENT
         )
         var onRightAxisLabelClick: (() -> Unit)? = null
+        var onXAxisLongPress: (() -> Unit)? = null
         var onViewportChanged: (() -> Unit)? = null
         var onSingleFingerDragDelta: ((Int, Int) -> Unit)? = null
         private var customStartMs: Long? = null
@@ -2988,8 +3173,21 @@ class BatteryCurrentService : Service() {
         private var gestureSourceView: View? = null
         private var isSingleFingerDragActive = false
         private var isZoomArmedTouchActive = false
+        private var isXAxisLongPressTouchActive = false
+        private var xAxisLongPressTriggered = false
+        private var xAxisTouchStartX = 0f
+        private var xAxisTouchStartY = 0f
         private var lastSingleRawX = 0f
         private var lastSingleRawY = 0f
+        private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
+        private val xAxisLongPressRunnable = Runnable {
+            if (isXAxisLongPressTouchActive) {
+                xAxisLongPressTriggered = true
+                isXAxisLongPressTouchActive = false
+                performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
+                onXAxisLongPress?.invoke()
+            }
+        }
         private val linePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = Color.rgb(82, 190, 128)
             style = Paint.Style.STROKE
@@ -3126,13 +3324,17 @@ class BatteryCurrentService : Service() {
             zeroTimeMs: Long,
             newRightAxisMode: RightAxisMode?,
             newUseFahrenheit: Boolean,
-            newCapacityThresholds: CapacityThresholdPreference.Thresholds
+            newCapacityThresholds: CapacityThresholdPreference.Thresholds,
+            newXAxisMode: String,
+            newUse24HourClock: Boolean
         ) {
             points.clear()
             points.addAll(newPoints)
             displayUnit = unit
             zeroTimestampMs = zeroTimeMs
             capacityThresholds = newCapacityThresholds
+            xAxisMode = newXAxisMode
+            use24HourClock = newUse24HourClock
             if (rightAxisMode != newRightAxisMode) {
                 customRightAxisMin = null
                 customRightAxisMax = null
@@ -3152,11 +3354,23 @@ class BatteryCurrentService : Service() {
                     val isResetZoomTouch = resetZoomHitRect.contains(event.x, event.y)
                     val isXZoomButtonTouch = xZoomButtonHitRect.contains(event.x, event.y)
                     val isYZoomButtonTouch = yZoomButtonHitRect.contains(event.x, event.y)
+                    isXAxisLongPressTouchActive = isXAxisLabelArea(event.x, event.y) &&
+                        !isResetZoomTouch &&
+                        !isXZoomButtonTouch &&
+                        !isYZoomButtonTouch
+                    xAxisLongPressTriggered = false
+                    if (isXAxisLongPressTouchActive) {
+                        xAxisTouchStartX = event.x
+                        xAxisTouchStartY = event.y
+                        removeCallbacks(xAxisLongPressRunnable)
+                        postDelayed(xAxisLongPressRunnable, ViewConfiguration.getLongPressTimeout().toLong())
+                    }
                     isZoomArmedTouchActive = activeZoomAxis != null && plotBounds.contains(event.x, event.y)
                     isSingleFingerDragActive = !isRightAxisLabelTouchActive &&
                         !isResetZoomTouch &&
                         !isXZoomButtonTouch &&
                         !isYZoomButtonTouch &&
+                        !isXAxisLongPressTouchActive &&
                         !isZoomArmedTouchActive &&
                         activeZoomAxis == null &&
                         plotBounds.contains(event.x, event.y)
@@ -3166,11 +3380,13 @@ class BatteryCurrentService : Service() {
                         isResetZoomTouch ||
                         isXZoomButtonTouch ||
                         isYZoomButtonTouch ||
+                        isXAxisLongPressTouchActive ||
                         isZoomArmedTouchActive ||
                         isSingleFingerDragActive
                 }
 
                 MotionEvent.ACTION_POINTER_DOWN -> {
+                    cancelXAxisLongPress()
                     if (activeZoomAxis != null && event.pointerCount >= 2 && isInsidePlot(event)) {
                         isSingleFingerDragActive = false
                         beginViewportGesture(event, this)
@@ -3194,6 +3410,14 @@ class BatteryCurrentService : Service() {
                         }
                         return true
                     }
+                    if (isXAxisLongPressTouchActive &&
+                        (abs(event.x - xAxisTouchStartX) > touchSlop || abs(event.y - xAxisTouchStartY) > touchSlop)
+                    ) {
+                        cancelXAxisLongPress()
+                    }
+                    if (event.pointerCount == 1 && isXAxisLongPressTouchActive) {
+                        return true
+                    }
                     if (event.pointerCount == 1 && isZoomArmedTouchActive) {
                         return true
                     }
@@ -3201,6 +3425,7 @@ class BatteryCurrentService : Service() {
 
                 MotionEvent.ACTION_POINTER_UP,
                 MotionEvent.ACTION_CANCEL -> {
+                    cancelXAxisLongPress()
                     isViewportGestureActive = false
                     gestureSourceView = null
                     isSingleFingerDragActive = false
@@ -3211,6 +3436,8 @@ class BatteryCurrentService : Service() {
                 }
 
                 MotionEvent.ACTION_UP -> {
+                    val handledXAxisLongPress = isXAxisLongPressTouchActive || xAxisLongPressTriggered
+                    cancelXAxisLongPress()
                     if (resetZoomHitRect.contains(event.x, event.y)) {
                         resetViewport()
                         onViewportChanged?.invoke()
@@ -3235,10 +3462,23 @@ class BatteryCurrentService : Service() {
                     isRightAxisLabelTouchActive = false
                     isSingleFingerDragActive = false
                     isZoomArmedTouchActive = false
-                    return handledDrag
+                    return handledDrag || handledXAxisLongPress
                 }
             }
             return false
+        }
+
+        private fun cancelXAxisLongPress() {
+            removeCallbacks(xAxisLongPressRunnable)
+            isXAxisLongPressTouchActive = false
+        }
+
+        private fun isXAxisLabelArea(x: Float, y: Float): Boolean {
+            if (plotBounds.isEmpty) return false
+            return x >= plotBounds.left &&
+                x <= plotBounds.right &&
+                y >= plotBounds.bottom + 8f &&
+                y <= height.toFloat()
         }
 
         fun hasCustomViewport(): Boolean =
@@ -3284,7 +3524,7 @@ class BatteryCurrentService : Service() {
             val left = 104f
             val top = 24f
             val right = width - 106f
-            val bottom = height - 142f
+            val bottom = height - 84f
             plotBounds.set(left, top, right, bottom)
 
             if (points.size < 2) {
@@ -3604,10 +3844,10 @@ class BatteryCurrentService : Service() {
             val hitHeight = 78f
             val visualInset = 8f
             xZoomButtonHitRect.set(
+                plotBounds.left - hitWidth - 18f,
+                plotBounds.bottom + 22f,
                 plotBounds.left - 18f,
-                plotBounds.bottom + 40f,
-                plotBounds.left - 18f + hitWidth,
-                plotBounds.bottom + 40f + hitHeight
+                plotBounds.bottom + 22f + hitHeight
             )
             drawZoomAxisButton(canvas, xZoomButtonHitRect, "\u2194", activeZoomAxis == ZoomAxis.X, visualInset)
 
@@ -3950,10 +4190,15 @@ class BatteryCurrentService : Service() {
             val tickStepMs = chooseTimeTickStepMs(visibleDurationMs)
             val zeroTimeMs = zeroTimestampMs.takeIf { it > 0L } ?: visibleStartMs
             val visibleStartOffsetMs = (visibleStartMs - zeroTimeMs).toFloat()
-            val firstTickOffsetMs = floor(visibleStartOffsetMs / tickStepMs) * tickStepMs
+            val firstTickOffsetMs = firstTimeTickOffsetMs(
+                visibleStartMs = visibleStartMs,
+                zeroTimeMs = zeroTimeMs,
+                visibleStartOffsetMs = visibleStartOffsetMs,
+                tickStepMs = tickStepMs
+            )
             val visibleEndOffsetMs = visibleStartOffsetMs + visibleDurationMs
             val labels = ArrayList<TimeTickLabel>()
-            drawMinorTimeTicks(canvas, visibleStartOffsetMs, visibleDurationMs, tickStepMs)
+            drawMinorTimeTicks(canvas, visibleStartOffsetMs, visibleDurationMs, tickStepMs, zeroTimeMs)
 
             var tickOffsetMs = firstTickOffsetMs
             while (tickOffsetMs <= visibleEndOffsetMs + tickStepMs * 0.5f) {
@@ -3963,22 +4208,40 @@ class BatteryCurrentService : Service() {
                 canvas.drawLine(x, plotBounds.top, x, plotBounds.bottom, gridPaint)
                 canvas.drawLine(x, plotBounds.bottom, x, plotBounds.bottom + 12f, tickPaint)
                 canvas.drawLine(x, plotBounds.top - 12f, x, plotBounds.top, tickPaint)
-                    labels.add(TimeTickLabel(x, formatDurationTick(tickOffsetMs)))
+                    labels.add(TimeTickLabel(x, formatTimeTick(zeroTimeMs, tickOffsetMs, visibleDurationMs)))
                 }
                 tickOffsetMs += tickStepMs
             }
 
-            drawTimeTickLabels(canvas, labels)
+            drawTimeTickLabels(canvas, labels, tickStepMs, visibleDurationMs)
         }
 
-        private fun drawTimeTickLabels(canvas: Canvas, labels: List<TimeTickLabel>) {
+        private fun drawTimeTickLabels(
+            canvas: Canvas,
+            labels: List<TimeTickLabel>,
+            tickStepMs: Float,
+            visibleDurationMs: Float
+        ) {
             if (labels.isEmpty()) return
 
             val visibleLabels = labels.toMutableList()
+            val clockLabelNudgePx = if (xAxisMode == X_AXIS_MODE_CLOCK && tickStepMs > 0f) {
+                (tickStepMs / 10f / visibleDurationMs.coerceAtLeast(1f)).coerceAtLeast(0f) * plotBounds.width()
+            } else {
+                0f
+            }
 
             visibleLabels.forEach { label ->
                 tickTextPaint.textAlign = Paint.Align.CENTER
-                canvas.drawText(label.text, label.x, plotBounds.bottom + 40f, tickTextPaint)
+                if (xAxisMode == X_AXIS_MODE_CLOCK) {
+                    val x = label.x + clockLabelNudgePx
+                    canvas.save()
+                    canvas.rotate(-90f, x, plotBounds.bottom + 34f)
+                    canvas.drawText(label.text, x, plotBounds.bottom + 34f, tickTextPaint)
+                    canvas.restore()
+                } else {
+                    canvas.drawText(label.text, label.x, plotBounds.bottom + 34f, tickTextPaint)
+                }
             }
         }
 
@@ -3986,13 +4249,19 @@ class BatteryCurrentService : Service() {
             canvas: Canvas,
             visibleStartOffsetMs: Float,
             visibleDurationMs: Float,
-            tickStepMs: Float
+            tickStepMs: Float,
+            zeroTimeMs: Long
         ) {
             if (tickStepMs <= 0f) return
 
             val minorStepMs = tickStepMs / 5f
             val visibleEndOffsetMs = visibleStartOffsetMs + visibleDurationMs
-            var tickOffsetMs = floor(visibleStartOffsetMs / minorStepMs) * minorStepMs
+            var tickOffsetMs = firstTimeTickOffsetMs(
+                visibleStartMs = zeroTimeMs + visibleStartOffsetMs.toLong(),
+                zeroTimeMs = zeroTimeMs,
+                visibleStartOffsetMs = visibleStartOffsetMs,
+                tickStepMs = minorStepMs
+            )
             while (tickOffsetMs <= visibleEndOffsetMs + minorStepMs * 0.5f) {
                 val majorPosition = tickOffsetMs / tickStepMs
                 val isMajor = abs(majorPosition - majorPosition.roundToInt()) < 0.001f
@@ -4005,6 +4274,29 @@ class BatteryCurrentService : Service() {
                     }
                 }
                 tickOffsetMs += minorStepMs
+            }
+        }
+
+        private fun firstTimeTickOffsetMs(
+            visibleStartMs: Long,
+            zeroTimeMs: Long,
+            visibleStartOffsetMs: Float,
+            tickStepMs: Float
+        ): Float {
+            if (xAxisMode != X_AXIS_MODE_CLOCK || zeroTimeMs <= 0L) {
+                return floor(visibleStartOffsetMs / tickStepMs) * tickStepMs
+            }
+
+            val stepMs = tickStepMs.toLong().coerceAtLeast(1L)
+            val firstClockTickMs = ceilDiv(visibleStartMs, stepMs) * stepMs
+            return (firstClockTickMs - zeroTimeMs).toFloat()
+        }
+
+        private fun ceilDiv(value: Long, divisor: Long): Long {
+            return if (value >= 0L) {
+                (value + divisor - 1L) / divisor
+            } else {
+                value / divisor
             }
         }
 
@@ -4100,6 +4392,37 @@ class BatteryCurrentService : Service() {
                     }
                 } else {
                     "$sign${minutes}m"
+                }
+            }
+        }
+
+        private fun formatTimeTick(zeroTimeMs: Long, tickOffsetMs: Float, visibleDurationMs: Float): String {
+            if (xAxisMode != X_AXIS_MODE_CLOCK || zeroTimeMs <= 0L) {
+                return formatDurationTick(tickOffsetMs)
+            }
+
+            val tickTimestampMs = zeroTimeMs + tickOffsetMs.toLong()
+            val calendar = java.util.Calendar.getInstance().apply {
+                timeInMillis = tickTimestampMs
+            }
+            val hour24 = calendar.get(java.util.Calendar.HOUR_OF_DAY)
+            val minute = calendar.get(java.util.Calendar.MINUTE)
+            val longWindow = visibleDurationMs >= 12f * 60f * 60f * 1000f
+
+            return if (use24HourClock) {
+                if (longWindow) {
+                    String.format(Locale.US, "%02dh", hour24)
+                } else {
+                    String.format(Locale.US, "%02d:%02d", hour24, minute)
+                }
+            } else {
+                val hour12 = calendar.get(java.util.Calendar.HOUR)
+                    .let { if (it == 0) 12 else it }
+                if (longWindow) {
+                    val suffix = if (calendar.get(java.util.Calendar.AM_PM) == java.util.Calendar.AM) "a" else "p"
+                    "$hour12$suffix"
+                } else {
+                    String.format(Locale.US, "%d:%02d", hour12, minute)
                 }
             }
         }
