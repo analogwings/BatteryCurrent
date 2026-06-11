@@ -1507,7 +1507,7 @@ class BatteryCurrentService : Service() {
             addView(LinearLayout(this@BatteryCurrentService).apply {
                 orientation = LinearLayout.VERTICAL
                 gravity = Gravity.CENTER
-                addView(graphView, LinearLayout.LayoutParams(878, 596))
+                addView(graphView, LinearLayout.LayoutParams(878, 620))
             })
 
             addView(createGraphMenuCollapseToggle())
@@ -1763,14 +1763,19 @@ class BatteryCurrentService : Service() {
         val capacityLine = buildPrimaryCapacityLine(estimateMah)
 
         return SpannableString(capacityLine.text).apply {
-            setSpan(ForegroundColorSpan(palette.estimateLabel), 0, capacityLine.valueStart, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
-            setSpan(ForegroundColorSpan(capacityLine.valueColor), capacityLine.valueStart, capacityLine.text.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+            capacityLine.labelRanges.forEach { range ->
+                setSpan(ForegroundColorSpan(palette.estimateLabel), range.first, range.last, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+            }
+            capacityLine.valueRanges.forEach { range ->
+                setSpan(ForegroundColorSpan(capacityLine.valueColor), range.first, range.last, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+            }
         }
     }
 
     private data class CapacityLine(
         val text: String,
-        val valueStart: Int,
+        val labelRanges: List<IntRange>,
+        val valueRanges: List<IntRange>,
         val valueColor: Int
     )
 
@@ -1781,10 +1786,15 @@ class BatteryCurrentService : Service() {
             val label = "Calibration battery capacity [${fdResult.startTimestampText}]:\n"
             val rawValue = String.format(Locale.US, "%dmAh", fdResult.capacityEstimateMah)
             val adjustedValue = adjustedFullDischargeCapacity(fdResult)
-            val suffix = String.format(Locale.US, " Adj: %dmAh%s", adjustedValue, adjustedCapacityDegradationText(adjustedValue))
+            val adjValue = String.format(Locale.US, "%dmAh%s", adjustedValue, adjustedCapacityDegradationText(adjustedValue))
+            val secondLine = "Raw: $rawValue   Adj: $adjValue"
+            val text = label + secondLine
+            val rawValueStart = text.indexOf(rawValue)
+            val adjValueStart = text.indexOf(adjValue)
             return CapacityLine(
-                text = label + rawValue + suffix,
-                valueStart = label.length,
+                text = text,
+                labelRanges = listOf(0 until label.length, label.length until rawValueStart, (rawValueStart + rawValue.length) until adjValueStart),
+                valueRanges = listOf(rawValueStart..rawValueStart + rawValue.length, adjValueStart..adjValueStart + adjValue.length),
                 valueColor = capacityEstimateColor(adjustedValue)
             )
         }
@@ -1793,7 +1803,8 @@ class BatteryCurrentService : Service() {
         val value = estimateMah?.let { String.format(Locale.US, "%dmAh", it) } ?: "--"
         return CapacityLine(
             text = label + value,
-            valueStart = label.length,
+            labelRanges = listOf(0 until label.length),
+            valueRanges = listOf(label.length until label.length + value.length),
             valueColor = estimateMah?.let { capacityEstimateColor(it) } ?: palette.cool
         )
     }
@@ -2570,14 +2581,19 @@ class BatteryCurrentService : Service() {
             text = "Clear memory and reset graph?"
             textSize = 13f
             typeface = Typeface.DEFAULT_BOLD
-            setTextColor(Color.WHITE)
+            setTextColor(graphPalette().text)
             gravity = Gravity.CENTER
             setSingleLine(true)
             setPadding(12, 0, 12, 0)
-        })
+        }, LinearLayout.LayoutParams(
+            0,
+            LinearLayout.LayoutParams.WRAP_CONTENT,
+            1f
+        ))
         row.addView(Button(this).apply {
             styleGraphMenuButton(this, textColor = graphDischargeTextColor)
             text = "Yes"
+            minWidth = 92
             setOnClickListener {
                 resetMeasurementAndGraph()
                 updateGraphOverlay()
@@ -2587,6 +2603,7 @@ class BatteryCurrentService : Service() {
         row.addView(Button(this).apply {
             styleGraphMenuButton(this)
             text = "Cancel"
+            minWidth = 128
             setOnClickListener {
                 restoreSecondaryActionRow(row)
             }
@@ -3524,7 +3541,7 @@ class BatteryCurrentService : Service() {
             val left = 104f
             val top = 24f
             val right = width - 106f
-            val bottom = height - 84f
+            val bottom = height - 108f
             plotBounds.set(left, top, right, bottom)
 
             if (points.size < 2) {
@@ -4225,21 +4242,17 @@ class BatteryCurrentService : Service() {
             if (labels.isEmpty()) return
 
             val visibleLabels = labels.toMutableList()
-            val clockLabelNudgePx = if (xAxisMode == X_AXIS_MODE_CLOCK && tickStepMs > 0f) {
-                (tickStepMs / 10f / visibleDurationMs.coerceAtLeast(1f)).coerceAtLeast(0f) * plotBounds.width()
-            } else {
-                0f
-            }
-
             visibleLabels.forEach { label ->
-                tickTextPaint.textAlign = Paint.Align.CENTER
                 if (xAxisMode == X_AXIS_MODE_CLOCK) {
-                    val x = label.x + clockLabelNudgePx
+                    tickTextPaint.textAlign = Paint.Align.CENTER
+                    val x = label.x + 8f
+                    val y = plotBounds.bottom + 52f
                     canvas.save()
-                    canvas.rotate(-90f, x, plotBounds.bottom + 34f)
-                    canvas.drawText(label.text, x, plotBounds.bottom + 34f, tickTextPaint)
+                    canvas.rotate(-90f, x, y)
+                    canvas.drawText(label.text, x, y, tickTextPaint)
                     canvas.restore()
                 } else {
+                    tickTextPaint.textAlign = Paint.Align.CENTER
                     canvas.drawText(label.text, label.x, plotBounds.bottom + 34f, tickTextPaint)
                 }
             }
@@ -4418,11 +4431,11 @@ class BatteryCurrentService : Service() {
             } else {
                 val hour12 = calendar.get(java.util.Calendar.HOUR)
                     .let { if (it == 0) 12 else it }
+                val suffix = if (calendar.get(java.util.Calendar.AM_PM) == java.util.Calendar.AM) "a" else "p"
                 if (longWindow) {
-                    val suffix = if (calendar.get(java.util.Calendar.AM_PM) == java.util.Calendar.AM) "a" else "p"
                     "$hour12$suffix"
                 } else {
-                    String.format(Locale.US, "%d:%02d", hour12, minute)
+                    String.format(Locale.US, "%d:%02d%s", hour12, minute, suffix)
                 }
             }
         }
