@@ -3219,6 +3219,13 @@ class BatteryCurrentService : Service() {
             strokeCap = Paint.Cap.ROUND
             strokeJoin = Paint.Join.ROUND
         }
+        private val rightAxisAveragePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.rgb(170, 245, 150)
+            style = Paint.Style.STROKE
+            strokeWidth = 2f
+            strokeCap = Paint.Cap.ROUND
+            strokeJoin = Paint.Join.ROUND
+        }
         private val rightAxisLabelBackgroundPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = palette.labelBackground
             style = Paint.Style.FILL
@@ -3614,7 +3621,7 @@ class BatteryCurrentService : Service() {
                 }
                 canvas.drawLine(previous.first, previous.second, current.first, current.second, linePaint)
             }
-            drawRightAxisTrace(canvas, visiblePoints, startMs, visibleDurationMs, rightAxisScale)
+            drawRightAxisTrace(canvas, points, visiblePoints, startMs, visibleDurationMs, rightAxisScale)
             drawAxes(canvas)
             drawEnergyUnitLabel(canvas)
             drawRightAxisUnitLabel(canvas)
@@ -3913,6 +3920,7 @@ class BatteryCurrentService : Service() {
 
         private fun drawRightAxisTrace(
             canvas: Canvas,
+            allPoints: List<EnergyPoint>,
             visiblePoints: List<EnergyPoint>,
             startMs: Long,
             visibleDurationMs: Float,
@@ -3931,7 +3939,88 @@ class BatteryCurrentService : Service() {
                 batteryLinePaint.color = rightAxisTraceColor(current.value)
                 canvas.drawLine(previous.x, previous.y, current.x, current.y, batteryLinePaint)
             }
+            drawRightAxisRunningAverage(canvas, allPoints, startMs, visibleDurationMs, scale)
             drawRightAxisZeroLine(canvas, scale)
+        }
+
+        private fun drawRightAxisRunningAverage(
+            canvas: Canvas,
+            allPoints: List<EnergyPoint>,
+            startMs: Long,
+            visibleDurationMs: Float,
+            scale: RightAxisScale
+        ) {
+            if (rightAxisMode !in setOf(
+                    RightAxisMode.CURRENT,
+                    RightAxisMode.VOLTAGE,
+                    RightAxisMode.TEMPERATURE
+                )
+            ) {
+                return
+            }
+
+            val runningPoints = buildRightAxisRunningAveragePoints(
+                allPoints = allPoints,
+                startMs = startMs,
+                visibleDurationMs = visibleDurationMs,
+                scale = scale
+            )
+            if (runningPoints.size < 2) return
+
+            for (index in 1 until runningPoints.size) {
+                val previous = runningPoints[index - 1]
+                val current = runningPoints[index]
+                val baseColor = rightAxisTraceColor(current.value)
+                rightAxisAveragePaint.color = Color.argb(
+                    145,
+                    Color.red(baseColor),
+                    Color.green(baseColor),
+                    Color.blue(baseColor)
+                )
+                canvas.drawLine(previous.x, previous.y, current.x, current.y, rightAxisAveragePaint)
+            }
+        }
+
+        private fun buildRightAxisRunningAveragePoints(
+            allPoints: List<EnergyPoint>,
+            startMs: Long,
+            visibleDurationMs: Float,
+            scale: RightAxisScale
+        ): List<TracePoint> {
+            val visibleEndMs = startMs + visibleDurationMs.toLong()
+            val runningPoints = ArrayList<TracePoint>()
+            var average = 0.0
+            var sampleCount = 0
+
+            allPoints.forEach { point ->
+                val value = rightAxisValue(point) ?: return@forEach
+                sampleCount += 1
+                average += (value - average) / sampleCount
+
+                if (point.timestampMs < startMs || point.timestampMs > visibleEndMs) return@forEach
+                val elapsedMs = point.timestampMs - startMs
+                val x = plotBounds.left + (elapsedMs.toFloat() / visibleDurationMs) * plotBounds.width()
+                runningPoints.add(TracePoint(x, yForRightAxisValue(average, scale), average))
+            }
+
+            return decimateRunningAverageTrace(runningPoints)
+        }
+
+        private fun decimateRunningAverageTrace(trace: List<TracePoint>): List<TracePoint> {
+            if (trace.size <= plotBounds.width().toInt().coerceAtLeast(2)) return trace
+
+            val result = ArrayList<TracePoint>()
+            var lastPixel = Int.MIN_VALUE
+            trace.forEach { point ->
+                val pixel = point.x.roundToInt()
+                if (pixel != lastPixel) {
+                    result.add(point)
+                    lastPixel = pixel
+                } else if (result.isNotEmpty()) {
+                    result[result.lastIndex] = point
+                }
+            }
+            return result
         }
 
         private fun drawBatteryThresholdLines(canvas: Canvas, scale: RightAxisScale) {

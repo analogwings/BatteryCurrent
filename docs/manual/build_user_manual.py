@@ -303,6 +303,7 @@ def build_manual():
         "Tap the grey right-axis label to cycle through Batt %, Temp, Volt, and mA.",
         "Battery percent, voltage, temperature, and current auto-scale for the visible data. Battery percent can extend above 100% only when manually zoomed.",
         "For mA mode, positive current is light green and negative current is orange, with a dashed zero-current reference line.",
+        "Current, voltage, and temperature traces include a thin, lighter cumulative running-average trace. It begins with the first graph sample and converges toward the true average as more samples are collected.",
         "When zoomed out, voltage, temperature, and current traces are smoothed for readability without changing the stored data.",
         "When Batt % is selected, faint reference lines mark the configured low and high capacity-event thresholds.",
         "Long-press the x-axis labels to switch between elapsed time and actual clock time. The 12h/24h button controls clock label format.",
