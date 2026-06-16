@@ -2881,26 +2881,29 @@ class BatteryCurrentService : Service() {
         val zeroMs = graphDisplayZeroTimestampMs
         if (zeroMs <= 0L) return energyHistory.toList()
 
+        val postResetPoints = energyHistory
+            .asSequence()
+            .filter { it.timestampMs > zeroMs }
+            .toList()
+        val firstPostResetPoint = postResetPoints.firstOrNull()
+
         val points = ArrayList<EnergyPoint>()
         points.add(EnergyPoint(
             zeroMs,
             0.0,
             0.0,
-            latestGraphBatteryPercent,
-            latestRoundedMilliAmps?.toDouble(),
-            latestTemperatureC,
-            latestVoltageMv
+            firstPostResetPoint?.batteryPercent ?: latestGraphBatteryPercent,
+            firstPostResetPoint?.currentMilliAmps,
+            firstPostResetPoint?.temperatureC,
+            firstPostResetPoint?.voltageMv
         ))
 
-        energyHistory
-            .asSequence()
-            .filter { it.timestampMs >= zeroMs }
-            .forEach { point ->
-                points.add(point.copy(
-                    energyMilliWattHours = point.energyMilliWattHours - graphDisplayZeroEnergyMilliWattHours,
-                    chargeMilliAmpHours = point.chargeMilliAmpHours - graphDisplayZeroChargeMilliAmpHours
-                ))
-            }
+        postResetPoints.forEach { point ->
+            points.add(point.copy(
+                energyMilliWattHours = point.energyMilliWattHours - graphDisplayZeroEnergyMilliWattHours,
+                chargeMilliAmpHours = point.chargeMilliAmpHours - graphDisplayZeroChargeMilliAmpHours
+            ))
+        }
 
         return points
     }
