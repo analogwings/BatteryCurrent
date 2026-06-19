@@ -212,6 +212,7 @@ class BatteryCurrentService : Service() {
     private var latestGraphBatteryPercent: Double? = null
     private var latestBatteryPercentHasFraction = false
     private var lastAutoResetBatteryPercent: Int? = null
+    private var lastAutoResetSignature: String? = null
     private var capacityDisplayState = BatteryCapacityEstimator.DisplayState(null, null, false, false)
     private var graphOverlayCreatedAtMs = 0L
     private var lastDisplay = CurrentDisplay(SpannedString("Starting..."))
@@ -740,15 +741,36 @@ class BatteryCurrentService : Service() {
 
         if (!AutoResetThresholdPreference.isResetOnThresholdEnabled(this)) return
         if (FullDischargeTest.isModeEnabled(this) || FullDischargeTest.isActive(this)) return
-        if (previousPercent == null) return
 
         val thresholds = CapacityThresholdPreference.load(this)
         val charging = averageMilliAmps > 20.0 || pluggedIn
         val discharging = averageMilliAmps < -20.0 || !pluggedIn
-        val crossedChargeStart = charging && previousPercent < thresholds.lowPercent && currentPercent >= thresholds.lowPercent
-        val crossedDischargeStart = discharging && previousPercent > thresholds.highPercent && currentPercent <= thresholds.highPercent
-        val crossedThreshold = crossedChargeStart || crossedDischargeStart
-        if (!crossedThreshold) return
+        val chargeSignature = "charge:${thresholds.lowPercent}"
+        val dischargeSignature = "discharge:${thresholds.highPercent}"
+
+        if (lastAutoResetSignature == chargeSignature && currentPercent < thresholds.lowPercent) {
+            lastAutoResetSignature = null
+        } else if (lastAutoResetSignature == dischargeSignature && currentPercent > thresholds.highPercent) {
+            lastAutoResetSignature = null
+        }
+
+        val crossedChargeStart = charging && (
+                previousPercent?.let { it <= thresholds.lowPercent && currentPercent >= thresholds.lowPercent }
+                    ?: (currentPercent == thresholds.lowPercent)
+                )
+        val crossedDischargeStart = discharging && (
+                previousPercent?.let { it >= thresholds.highPercent && currentPercent <= thresholds.highPercent }
+                    ?: (currentPercent == thresholds.highPercent)
+                )
+
+        val resetSignature = when {
+            crossedChargeStart -> chargeSignature
+            crossedDischargeStart -> dischargeSignature
+            else -> null
+        } ?: return
+        if (lastAutoResetSignature == resetSignature) return
+
+        lastAutoResetSignature = resetSignature
 
         resetGraphDisplayBaseline(now)
     }
