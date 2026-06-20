@@ -1,6 +1,7 @@
 package com.analogwings.batterycurrent
 
 import android.content.Context
+import androidx.core.content.edit
 
 object CapacityThresholdPreference {
     data class Thresholds(
@@ -28,11 +29,10 @@ object CapacityThresholdPreference {
 
     fun save(context: Context, lowPercent: Int, highPercent: Int): Thresholds {
         val thresholds = sanitize(lowPercent, highPercent)
-        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            .edit()
-            .putInt(LOW_PERCENT_KEY, thresholds.lowPercent)
-            .putInt(HIGH_PERCENT_KEY, thresholds.highPercent)
-            .apply()
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit {
+            putInt(LOW_PERCENT_KEY, thresholds.lowPercent)
+            putInt(HIGH_PERCENT_KEY, thresholds.highPercent)
+        }
         return thresholds
     }
 

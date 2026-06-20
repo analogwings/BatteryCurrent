@@ -26,6 +26,7 @@ class BatteryCapacityEstimator(private val context: Context) {
     )
 
     data class CapacityEventSummary(
+        val eventId: String,
         val startTimestampMs: Long,
         val endTimestampMs: Long,
         val direction: String,
@@ -35,7 +36,8 @@ class BatteryCapacityEstimator(private val context: Context) {
         val mahAdded: Int,
         val capacityEstimateMah: Int,
         val peukertK: Double?,
-        val peukertAdjustedCapacityMah: Int?
+        val peukertAdjustedCapacityMah: Int?,
+        val isExcluded: Boolean
     )
 
     data class SocBucketSummary(
@@ -225,7 +227,7 @@ class BatteryCapacityEstimator(private val context: Context) {
             ?: latestDailyEstimate()
         val referenceCurrent = referenceCapacity?.let { it * REFERENCE_C_RATE }
         val peukertK = latestStoredPeukertK()
-        val events = readCapacityEvents()
+        val events = readCapacityEvents(includeExcluded = false)
         return CapacityStats(
             referenceCapacityMah = referenceCapacity,
             referenceCurrentMa = referenceCurrent,
@@ -239,15 +241,48 @@ class BatteryCapacityEstimator(private val context: Context) {
 
     fun eventsForDay(dayTimestampMs: Long): List<CapacityEventSummary> {
         val targetDay = dayStartMs(dayTimestampMs)
-        return readCapacityEvents()
+        return readCapacityEvents(includeExcluded = true)
             .filter { event ->
                 dayStartMs(event.startTimestampMs) == targetDay || dayStartMs(event.endTimestampMs) == targetDay
             }
             .sortedBy { it.startTimestampMs }
     }
 
-    private fun readCapacityEvents(): List<CapacityEventSummary> {
+    fun setCapacityEventExcluded(eventId: String, excluded: Boolean): Boolean {
+        if (!eventsFile.exists()) return false
+        ensureEventsHeader(CAPACITY_EVENTS_HEADER)
+
+        val lines = eventsFile.readLines().filter { it.isNotBlank() }
+        if (lines.size < 2) return false
+        val headers = lines.first().split(",").map { it.trim() }
+        val excludedIndex = headers.indexOfFirst { it.equals("Excluded", ignoreCase = true) }
+        if (excludedIndex < 0) return false
+
+        val startIndex = headers.indexOf("Time_date_start")
+        val directionIndex = headers.indexOf("Direction")
+        val startMahIndex = headers.indexOf("mAh_start")
+        val endIndex = headers.indexOf("Time_date_end")
+        val endMahIndex = headers.indexOf("mAh_end")
+        var changed = false
+        val updatedRows = lines.drop(1).map { line ->
+            val parts = line.split(",").toMutableList()
+            while (parts.size <= excludedIndex) parts.add("")
+            if (capacityEventId(parts, startIndex, directionIndex, startMahIndex, endIndex, endMahIndex) == eventId) {
+                parts[excludedIndex] = excluded.toString()
+                changed = true
+            }
+            parts.joinToString(",")
+        }
+
+        if (!changed) return false
+        eventsFile.writeText((listOf(CAPACITY_EVENTS_HEADER) + updatedRows).joinToString("\n"))
+        rebuildCapacitySummariesFromEvents()
+        return true
+    }
+
+    private fun readCapacityEvents(includeExcluded: Boolean = false): List<CapacityEventSummary> {
         if (!eventsFile.exists()) return emptyList()
+        ensureEventsHeader(CAPACITY_EVENTS_HEADER)
         val lines = eventsFile.readText()
             .replace("\\n", "\n")
             .lines()
@@ -273,6 +308,7 @@ class BatteryCapacityEstimator(private val context: Context) {
         val adjustedIndex = indexOf("PeukertAdjustedCapacity_mAh")
         val lowThresholdIndex = indexOf("LowPercent")
         val highThresholdIndex = indexOf("HighPercent")
+        val excludedIndex = indexOf("Excluded")
 
         return lines.drop(1).mapNotNull { line ->
             val parts = line.split(",")
@@ -285,8 +321,11 @@ class BatteryCapacityEstimator(private val context: Context) {
                 deltaMah = abs(endMah - startMah),
                 spanPercent = eventSpanPercent(parts, lowThresholdIndex, highThresholdIndex)
             )
+            val excluded = parts.getOrNull(excludedIndex)?.toBooleanStrictOrNull() ?: false
+            if (excluded && !includeExcluded) return@mapNotNull null
 
             CapacityEventSummary(
+                eventId = capacityEventId(parts, startIndex, directionIndex, startMahIndex, endIndex, endMahIndex),
                 startTimestampMs = startTimestamp,
                 endTimestampMs = endTimestamp,
                 direction = parts.getOrNull(directionIndex)?.ifBlank { null } ?: "event",
@@ -296,7 +335,8 @@ class BatteryCapacityEstimator(private val context: Context) {
                 mahAdded = abs(endMah - startMah).roundToInt(),
                 capacityEstimateMah = capacityEstimate,
                 peukertK = parts.getOrNull(peukertIndex)?.toDoubleOrNull(),
-                peukertAdjustedCapacityMah = parts.getOrNull(adjustedIndex)?.toIntOrNull()
+                peukertAdjustedCapacityMah = parts.getOrNull(adjustedIndex)?.toIntOrNull(),
+                isExcluded = excluded
             )
         }.sortedBy { it.startTimestampMs }
     }
@@ -334,6 +374,7 @@ class BatteryCapacityEstimator(private val context: Context) {
     }
 
     fun socBucketSummaries(): List<SocBucketSummary> {
+        migrateLegacyTopSocBucketIfNeeded()
         return readSocBuckets().map { bucket ->
             val learnedMah = bucket.sampleCount.takeIf { it > 0 }
                 ?.let { bucket.totalMah / it * SOC_BUCKET_PERCENT_SPAN }
@@ -352,6 +393,7 @@ class BatteryCapacityEstimator(private val context: Context) {
     }
 
     fun socLinearityPoints(): List<SocLinearityPoint> {
+        migrateLegacyTopSocBucketIfNeeded()
         val learnedBuckets = socBucketLinearityPoints()
         val idealMah = learnedBuckets
             .takeIf { it.isNotEmpty() }
@@ -381,7 +423,7 @@ class BatteryCapacityEstimator(private val context: Context) {
 
     private fun socBucketLinearityPoints(): List<SocLinearityPoint> {
         val learnedBuckets = socBucketSummaries()
-            .filter { it.sampleCount > 0 && it.learnedMah != null && it.learnedMah > 0.0 }
+            .filter { it.sampleCount >= MIN_SOC_BUCKET_AVERAGE_SAMPLES && it.learnedMah != null && it.learnedMah > 0.0 }
             .sortedBy { it.bucketStartPct }
         if (learnedBuckets.isEmpty()) return emptyList()
 
@@ -601,7 +643,6 @@ class BatteryCapacityEstimator(private val context: Context) {
         lowPercent: Int,
         highPercent: Int
     ) {
-        val header = "Time_date_start,Direction,mAh_start,Time_date_end,mAh_end,AvgCurrent_mA,AvgTemp_C,AvgVoltage_mV,PeukertK,PeukertAdjustedCapacity_mAh,LowPercent,HighPercent"
         val row = listOf(
             formatEventTimestamp(startTimestampMs),
             directionLabel(direction),
@@ -614,12 +655,13 @@ class BatteryCapacityEstimator(private val context: Context) {
             peukertK?.let { String.format(Locale.US, "%.4f", it) } ?: "",
             peukertAdjustedCapacityMah?.toString() ?: "",
             lowPercent.toString(),
-            highPercent.toString()
+            highPercent.toString(),
+            false.toString()
         ).joinToString(",")
 
-        ensureEventsHeader(header)
+        ensureEventsHeader(CAPACITY_EVENTS_HEADER)
         if (!eventsFile.exists() || eventsFile.length() == 0L) {
-            eventsFile.writeText("$header\n$row")
+            eventsFile.writeText("$CAPACITY_EVENTS_HEADER\n$row")
         } else {
             eventsFile.appendText("\n$row")
         }
@@ -667,15 +709,60 @@ class BatteryCapacityEstimator(private val context: Context) {
                         parts
                     }
                 }
-                if (voltageMigratedParts.size == 10) {
+                val thresholdMigratedParts = if (voltageMigratedParts.size == 10) {
                     // Legacy rows were recorded using the original 25-75% capacity window.
-                    (voltageMigratedParts + CapacityThresholdPreference.DEFAULT_LOW_PERCENT.toString() +
-                            CapacityThresholdPreference.DEFAULT_HIGH_PERCENT.toString()).joinToString(",")
+                    voltageMigratedParts + CapacityThresholdPreference.DEFAULT_LOW_PERCENT.toString() +
+                            CapacityThresholdPreference.DEFAULT_HIGH_PERCENT.toString()
                 } else {
-                    voltageMigratedParts.joinToString(",")
+                    voltageMigratedParts
                 }
+                val excludedMigratedParts = if (thresholdMigratedParts.size == 12) {
+                    thresholdMigratedParts + false.toString()
+                } else {
+                    thresholdMigratedParts
+                }
+                excludedMigratedParts.joinToString(",")
             }
             eventsFile.writeText((listOf(header) + migratedRows).joinToString("\n"))
+        }
+    }
+
+    private fun capacityEventId(
+        parts: List<String>,
+        startIndex: Int,
+        directionIndex: Int,
+        startMahIndex: Int,
+        endIndex: Int,
+        endMahIndex: Int
+    ): String {
+        return listOf(
+            parts.getOrNull(startIndex).orEmpty(),
+            parts.getOrNull(directionIndex).orEmpty(),
+            parts.getOrNull(startMahIndex).orEmpty(),
+            parts.getOrNull(endIndex).orEmpty(),
+            parts.getOrNull(endMahIndex).orEmpty()
+        ).joinToString("|")
+    }
+
+    private fun rebuildCapacitySummariesFromEvents() {
+        readingsFile.delete()
+        movingAverageFile.delete()
+        prefs.edit()
+            .remove(MOVING_AVERAGE_SAMPLES_KEY)
+            .remove(TOTAL_CAPACITY_READING_COUNT_KEY)
+            .remove(LATEST_MOVING_AVERAGE_KEY)
+            .remove(LATEST_PEUKERT_K_KEY)
+            .apply()
+
+        val activeEvents = readCapacityEvents(includeExcluded = false)
+        activeEvents.forEach { event ->
+            val capacityMah = event.peukertAdjustedCapacityMah ?: event.capacityEstimateMah
+            appendDailyReading(event.endTimestampMs, capacityMah)
+            appendMovingAverageReading(event.endTimestampMs, capacityMah)
+        }
+        val latestPeukertK = activeEvents.lastOrNull { it.peukertK != null }?.peukertK
+        if (latestPeukertK != null) {
+            prefs.edit().putFloat(LATEST_PEUKERT_K_KEY, latestPeukertK.toFloat()).apply()
         }
     }
 
@@ -702,6 +789,7 @@ class BatteryCapacityEstimator(private val context: Context) {
     ) {
         if (direction != DISCHARGING) {
             clearLastSocBucketPoint()
+            clearTopSocBucket()
             return
         }
 
@@ -712,6 +800,7 @@ class BatteryCapacityEstimator(private val context: Context) {
 
         val previousDirection = prefs.getInt(LAST_SOC_BUCKET_DIRECTION_KEY, 0)
         if (previousDirection != direction) {
+            clearTopSocBucket()
             storeLastSocBucketPoint(batteryPercent, totalChargeMah, direction)
             return
         }
@@ -730,6 +819,16 @@ class BatteryCapacityEstimator(private val context: Context) {
             return
         }
 
+        updateTopSocBucket(
+            clampedPrevious = clampedPrevious,
+            clampedCurrent = clampedCurrent,
+            previousChargeMah = previousChargeMah,
+            totalChargeMah = totalChargeMah,
+            averageMilliAmps = averageMilliAmps,
+            temperatureC = temperatureC,
+            voltageMv = voltageMv
+        )
+
         val percentDelta = abs(clampedCurrent - clampedPrevious)
         val chargeDeltaMah = abs(totalChargeMah - previousChargeMah)
 
@@ -742,6 +841,7 @@ class BatteryCapacityEstimator(private val context: Context) {
 
             for (pct in low until high) {
                 val bucketStart = ((pct / SOC_BUCKET_PERCENT_SPAN) * SOC_BUCKET_PERCENT_SPAN).coerceIn(0, 90)
+                if (bucketStart >= TOP_SOC_BUCKET_START_PERCENT) continue
                 val existing = buckets[bucketStart] ?: SocBucketAccumulator(
                     bucketStartPct = bucketStart,
                     bucketEndPct = bucketStart + SOC_BUCKET_PERCENT_SPAN,
@@ -780,6 +880,122 @@ class BatteryCapacityEstimator(private val context: Context) {
         storeLastSocBucketPoint(batteryPercent, totalChargeMah, direction)
     }
 
+    private fun updateTopSocBucket(
+        clampedPrevious: Int,
+        clampedCurrent: Int,
+        previousChargeMah: Double,
+        totalChargeMah: Double,
+        averageMilliAmps: Double,
+        temperatureC: Double?,
+        voltageMv: Int?
+    ) {
+        if (clampedPrevious == 100 && clampedCurrent < 100 && !hasActiveTopSocBucket()) {
+            startTopSocBucket(previousChargeMah)
+        }
+
+        if (!hasActiveTopSocBucket()) return
+
+        if (clampedCurrent > TOP_SOC_BUCKET_START_PERCENT) {
+            addTopSocBucketSample(averageMilliAmps, temperatureC)
+            return
+        }
+
+        val topBucketEndChargeMah = if (clampedPrevious > TOP_SOC_BUCKET_START_PERCENT && clampedCurrent < TOP_SOC_BUCKET_START_PERCENT) {
+            val fractionToThreshold = (clampedPrevious - TOP_SOC_BUCKET_START_PERCENT).toDouble() /
+                    (clampedPrevious - clampedCurrent).toDouble()
+            previousChargeMah + (totalChargeMah - previousChargeMah) * fractionToThreshold
+        } else {
+            totalChargeMah
+        }
+        completeTopSocBucket(topBucketEndChargeMah, averageMilliAmps, temperatureC, voltageMv)
+    }
+
+    private fun hasActiveTopSocBucket(): Boolean {
+        return !prefs.getFloat(TOP_SOC_BUCKET_START_CHARGE_KEY, Float.NaN).isNaN()
+    }
+
+    private fun startTopSocBucket(startChargeMah: Double) {
+        prefs.edit()
+            .putFloat(TOP_SOC_BUCKET_START_CHARGE_KEY, startChargeMah.toFloat())
+            .putInt(TOP_SOC_BUCKET_CURRENT_SAMPLE_COUNT_KEY, 0)
+            .putFloat(TOP_SOC_BUCKET_CURRENT_SUM_KEY, 0f)
+            .putInt(TOP_SOC_BUCKET_TEMPERATURE_SAMPLE_COUNT_KEY, 0)
+            .putFloat(TOP_SOC_BUCKET_TEMPERATURE_SUM_KEY, 0f)
+            .apply()
+    }
+
+    private fun addTopSocBucketSample(averageMilliAmps: Double, temperatureC: Double?) {
+        val currentSampleCount = prefs.getInt(TOP_SOC_BUCKET_CURRENT_SAMPLE_COUNT_KEY, 0)
+        val currentSum = prefs.getFloat(TOP_SOC_BUCKET_CURRENT_SUM_KEY, 0f).toDouble()
+        val temperatureSampleCount = prefs.getInt(TOP_SOC_BUCKET_TEMPERATURE_SAMPLE_COUNT_KEY, 0)
+        val temperatureSum = prefs.getFloat(TOP_SOC_BUCKET_TEMPERATURE_SUM_KEY, 0f).toDouble()
+
+        prefs.edit()
+            .putInt(TOP_SOC_BUCKET_CURRENT_SAMPLE_COUNT_KEY, currentSampleCount + 1)
+            .putFloat(TOP_SOC_BUCKET_CURRENT_SUM_KEY, (currentSum + abs(averageMilliAmps)).toFloat())
+            .putInt(TOP_SOC_BUCKET_TEMPERATURE_SAMPLE_COUNT_KEY, temperatureSampleCount + if (temperatureC != null) 1 else 0)
+            .putFloat(TOP_SOC_BUCKET_TEMPERATURE_SUM_KEY, (temperatureSum + (temperatureC ?: 0.0)).toFloat())
+            .apply()
+    }
+
+    private fun completeTopSocBucket(
+        totalChargeMah: Double,
+        averageMilliAmps: Double,
+        temperatureC: Double?,
+        voltageMv: Int?
+    ) {
+        val startChargeMah = prefs.getFloat(TOP_SOC_BUCKET_START_CHARGE_KEY, Float.NaN)
+            .takeUnless { it.isNaN() }
+            ?.toDouble() ?: return
+        addTopSocBucketSample(averageMilliAmps, temperatureC)
+
+        val learnedMah = abs(totalChargeMah - startChargeMah)
+        if (learnedMah <= 0.0) {
+            clearTopSocBucket()
+            return
+        }
+
+        val currentSampleCount = prefs.getInt(TOP_SOC_BUCKET_CURRENT_SAMPLE_COUNT_KEY, 0)
+        val currentSum = prefs.getFloat(TOP_SOC_BUCKET_CURRENT_SUM_KEY, 0f).toDouble()
+        val temperatureSampleCount = prefs.getInt(TOP_SOC_BUCKET_TEMPERATURE_SAMPLE_COUNT_KEY, 0)
+        val temperatureSum = prefs.getFloat(TOP_SOC_BUCKET_TEMPERATURE_SUM_KEY, 0f).toDouble()
+        val learnedWh = learnedMah * ((voltageMv ?: 0).coerceAtLeast(0).toDouble() / 1000.0) / 1000.0
+        val buckets = readSocBuckets().associateBy { it.bucketStartPct }.toMutableMap()
+        val existing = buckets[TOP_SOC_BUCKET_START_PERCENT] ?: SocBucketAccumulator(
+            bucketStartPct = TOP_SOC_BUCKET_START_PERCENT,
+            bucketEndPct = 100,
+            totalMah = 0.0,
+            totalWh = 0.0,
+            sampleCount = 0,
+            currentSampleCount = 0,
+            currentSumMa = 0.0,
+            temperatureSampleCount = 0,
+            temperatureSumC = 0.0
+        )
+
+        buckets[TOP_SOC_BUCKET_START_PERCENT] = existing.copy(
+            totalMah = existing.totalMah + learnedMah / SOC_BUCKET_PERCENT_SPAN,
+            totalWh = existing.totalWh + learnedWh / SOC_BUCKET_PERCENT_SPAN,
+            sampleCount = existing.sampleCount + 1,
+            currentSampleCount = existing.currentSampleCount + currentSampleCount,
+            currentSumMa = existing.currentSumMa + currentSum,
+            temperatureSampleCount = existing.temperatureSampleCount + temperatureSampleCount,
+            temperatureSumC = existing.temperatureSumC + temperatureSum
+        )
+        writeSocBuckets(buckets.values.sortedBy { it.bucketStartPct })
+        appendSocBucketSample(
+            SocBucketSample(
+                timestampMs = System.currentTimeMillis(),
+                bucketStartPct = TOP_SOC_BUCKET_START_PERCENT,
+                bucketEndPct = 100,
+                learnedMah = learnedMah,
+                currentMa = currentSampleCount.takeIf { it > 0 }?.let { currentSum / it } ?: 0.0,
+                temperatureC = temperatureSampleCount.takeIf { it > 0 }?.let { temperatureSum / it }
+            )
+        )
+        clearTopSocBucket()
+    }
+
     private fun storeLastSocBucketPoint(batteryPercent: Int, totalChargeMah: Double, direction: Int) {
         prefs.edit()
             .putInt(LAST_SOC_BUCKET_PERCENT_KEY, batteryPercent.coerceIn(0, 100))
@@ -796,7 +1012,18 @@ class BatteryCapacityEstimator(private val context: Context) {
             .apply()
     }
 
+    private fun clearTopSocBucket() {
+        prefs.edit()
+            .remove(TOP_SOC_BUCKET_START_CHARGE_KEY)
+            .remove(TOP_SOC_BUCKET_CURRENT_SAMPLE_COUNT_KEY)
+            .remove(TOP_SOC_BUCKET_CURRENT_SUM_KEY)
+            .remove(TOP_SOC_BUCKET_TEMPERATURE_SAMPLE_COUNT_KEY)
+            .remove(TOP_SOC_BUCKET_TEMPERATURE_SUM_KEY)
+            .apply()
+    }
+
     private fun readSocBuckets(): List<SocBucketAccumulator> {
+        migrateLegacyTopSocBucketIfNeeded()
         if (!socBucketsFile.exists()) return emptyList()
         return socBucketsFile.readLines().mapNotNull { line ->
             if (line.startsWith("BucketStartPct,")) return@mapNotNull null
@@ -834,6 +1061,29 @@ class BatteryCapacityEstimator(private val context: Context) {
         socBucketsFile.writeText((listOf(header) + rows).joinToString("\n"))
     }
 
+    private fun migrateLegacyTopSocBucketIfNeeded() {
+        if (prefs.getBoolean(TOP_SOC_BUCKET_STRICT_MIGRATED_KEY, false)) return
+
+        if (socBucketsFile.exists()) {
+            val filteredRows = socBucketsFile.readLines().filter { line ->
+                line.startsWith("BucketStartPct,") ||
+                        line.split(",").firstOrNull()?.toIntOrNull() != TOP_SOC_BUCKET_START_PERCENT
+            }
+            socBucketsFile.writeText(filteredRows.joinToString("\n"))
+        }
+
+        if (socBucketSamplesFile.exists()) {
+            val filteredRows = socBucketSamplesFile.readLines().filter { line ->
+                line.startsWith("TimestampMs,") ||
+                        line.split(",").getOrNull(1)?.toIntOrNull() != TOP_SOC_BUCKET_START_PERCENT
+            }
+            socBucketSamplesFile.writeText(filteredRows.joinToString("\n"))
+        }
+
+        clearTopSocBucket()
+        prefs.edit().putBoolean(TOP_SOC_BUCKET_STRICT_MIGRATED_KEY, true).apply()
+    }
+
     private fun readSocBucketSamples(): List<SocBucketSample> {
         if (!socBucketSamplesFile.exists()) return emptyList()
         return socBucketSamplesFile.readLines().mapNotNull { line ->
@@ -867,8 +1117,23 @@ class BatteryCapacityEstimator(private val context: Context) {
             String.format(Locale.US, "%.1f", sample.currentMa),
             sample.temperatureC?.let { String.format(Locale.US, "%.1f", it) } ?: ""
         ).joinToString(",")
-        val rows = (existingRows + newRow).takeLast(MAX_SOC_BUCKET_SAMPLES)
+        val rows = balancedRecentSocSampleRows(existingRows + newRow)
         socBucketSamplesFile.writeText((listOf(header) + rows).joinToString("\n"))
+    }
+
+    private fun balancedRecentSocSampleRows(rows: List<String>): List<String> {
+        val byBucket = rows
+            .mapNotNull { row ->
+                val bucketStart = row.split(",", limit = 4).getOrNull(1)?.toIntOrNull()
+                    ?: return@mapNotNull null
+                bucketStart to row
+            }
+            .groupBy({ it.first }, { it.second })
+            .toSortedMap()
+
+        return byBucket.values
+            .flatMap { bucketRows -> bucketRows.takeLast(MAX_SOC_BUCKET_SAMPLES_PER_BUCKET) }
+            .takeLast(MAX_SOC_BUCKET_SAMPLES)
     }
 
     private data class PeukertEventReading(
@@ -956,9 +1221,13 @@ class BatteryCapacityEstimator(private val context: Context) {
 
     private fun readPeukertEventReadings(): List<PeukertEventReading> {
         if (!eventsFile.exists()) return emptyList()
+        ensureEventsHeader(CAPACITY_EVENTS_HEADER)
+        val headers = eventsFile.readLines().firstOrNull()?.split(",")?.map { it.trim() } ?: return emptyList()
+        val excludedIndex = headers.indexOfFirst { it.equals("Excluded", ignoreCase = true) }
         return eventsFile.readLines().drop(1).mapNotNull { line ->
             val parts = line.split(",")
             if (parts.size < 8) return@mapNotNull null
+            if (parts.getOrNull(excludedIndex)?.toBooleanStrictOrNull() == true) return@mapNotNull null
             val startCharge = parts[2].toDoubleOrNull() ?: return@mapNotNull null
             val endCharge = parts[4].toDoubleOrNull() ?: return@mapNotNull null
             val avgCurrent = parts[5].toDoubleOrNull() ?: return@mapNotNull null
@@ -1244,6 +1513,7 @@ class BatteryCapacityEstimator(private val context: Context) {
         private const val ACTIVE_EVENT_TEMPERATURE_SUM_KEY = "active_event_temperature_sum_c"
         private const val ACTIVE_EVENT_VOLTAGE_SAMPLE_COUNT_KEY = "active_event_voltage_sample_count"
         private const val ACTIVE_EVENT_VOLTAGE_SUM_KEY = "active_event_voltage_sum_mv"
+        private const val CAPACITY_EVENTS_HEADER = "Time_date_start,Direction,mAh_start,Time_date_end,mAh_end,AvgCurrent_mA,AvgTemp_C,AvgVoltage_mV,PeukertK,PeukertAdjustedCapacity_mAh,LowPercent,HighPercent,Excluded"
         private const val EVENT_PAUSED_AFTER_RESET_KEY = "event_paused_after_reset"
         private const val LAST_BATTERY_PERCENT_KEY = "last_battery_percent"
         private const val CHARGE_EQUIVALENT_CYCLES_KEY = "charge_equivalent_cycles"
@@ -1259,9 +1529,18 @@ class BatteryCapacityEstimator(private val context: Context) {
         private const val LAST_SOC_BUCKET_PERCENT_KEY = "last_soc_bucket_percent"
         private const val LAST_SOC_BUCKET_CHARGE_MAH_KEY = "last_soc_bucket_charge_mah"
         private const val LAST_SOC_BUCKET_DIRECTION_KEY = "last_soc_bucket_direction"
+        private const val TOP_SOC_BUCKET_START_CHARGE_KEY = "top_soc_bucket_start_charge_mah"
+        private const val TOP_SOC_BUCKET_CURRENT_SAMPLE_COUNT_KEY = "top_soc_bucket_current_sample_count"
+        private const val TOP_SOC_BUCKET_CURRENT_SUM_KEY = "top_soc_bucket_current_sum_ma"
+        private const val TOP_SOC_BUCKET_TEMPERATURE_SAMPLE_COUNT_KEY = "top_soc_bucket_temperature_sample_count"
+        private const val TOP_SOC_BUCKET_TEMPERATURE_SUM_KEY = "top_soc_bucket_temperature_sum_c"
+        private const val TOP_SOC_BUCKET_STRICT_MIGRATED_KEY = "top_soc_bucket_strict_migrated"
         private const val SOC_BUCKET_PERCENT_SPAN = 10
+        private const val TOP_SOC_BUCKET_START_PERCENT = 90
         private const val MAX_SOC_BUCKET_SAMPLES = 2000
+        private const val MAX_SOC_BUCKET_SAMPLES_PER_BUCKET = 200
         private const val MAX_SOC_LINEARITY_DISPLAY_SAMPLES = 100
+        private const val MIN_SOC_BUCKET_AVERAGE_SAMPLES = 3
         private const val MIN_SOC_OUTLIER_FILTER_SAMPLES = 8
         private const val SOC_OUTLIER_IQR_MULTIPLIER = 1.5
         private const val SOC_OUTLIER_MIN_MEDIAN_RATIO = 0.25
