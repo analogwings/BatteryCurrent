@@ -1787,10 +1787,20 @@ class BatteryCurrentService : Service() {
 
         return SpannableString(capacityLine.text).apply {
             capacityLine.labelRanges.forEach { range ->
-                setSpan(ForegroundColorSpan(palette.estimateLabel), range.first, range.last, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+                setSpan(
+                    ForegroundColorSpan(palette.estimateLabel),
+                    range.first,
+                    (range.last + 1).coerceAtMost(length),
+                    Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+                )
             }
             capacityLine.valueRanges.forEach { range ->
-                setSpan(ForegroundColorSpan(capacityLine.valueColor), range.first, range.last, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+                setSpan(
+                    ForegroundColorSpan(capacityLine.valueColor),
+                    range.first,
+                    (range.last + 1).coerceAtMost(length),
+                    Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+                )
             }
         }
     }
@@ -1817,7 +1827,7 @@ class BatteryCurrentService : Service() {
             return CapacityLine(
                 text = text,
                 labelRanges = listOf(0 until label.length, label.length until rawValueStart, (rawValueStart + rawValue.length) until adjValueStart),
-                valueRanges = listOf(rawValueStart..rawValueStart + rawValue.length, adjValueStart..adjValueStart + adjValue.length),
+                valueRanges = listOf(rawValueStart until rawValueStart + rawValue.length, adjValueStart until adjValueStart + adjValue.length),
                 valueColor = capacityEstimateColor(adjustedValue)
             )
         }
@@ -2190,6 +2200,7 @@ class BatteryCurrentService : Service() {
                 styleGraphMenuButton(this, textColor = if (excluding) graphDischargeTextColor else palette.cool)
                 text = if (excluding) "Exclude" else "Restore"
                 setOnClickListener {
+                    val historyWasOpen = capacityHistoryPopupView != null
                     if (capacityEstimator.setCapacityEventExcluded(event.eventId, excluding)) {
                         Toast.makeText(
                             this@BatteryCurrentService,
@@ -2200,6 +2211,10 @@ class BatteryCurrentService : Service() {
                     capacityDisplayState = capacityEstimator.displayState()
                     removeCapacityEventActionPopup()
                     removeCapacityEventDetailsPopup()
+                    if (historyWasOpen) {
+                        removeCapacityHistoryPopup()
+                        showCapacityHistoryPopup()
+                    }
                     showCapacityEventDetailsPopup(dayTimestampMs)
                     updateGraphOverlay()
                 }

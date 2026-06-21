@@ -185,7 +185,7 @@ class BatteryCapacityEstimator(private val context: Context) {
     fun displayState(): DisplayState {
         val activeEvent = readActiveEvent()
         return DisplayState(
-            estimateMah = recentDailyWeightedEstimate() ?: latestDailyEstimate(),
+            estimateMah = recentIncludedEventWeightedEstimate() ?: recentDailyWeightedEstimate() ?: latestDailyEstimate(),
             warningText = buildWarningText(),
             isEventActive = activeEvent != null,
             isEventArmed = activeEvent == null && isAtCapacityEventArmingLevel()
@@ -218,7 +218,7 @@ class BatteryCapacityEstimator(private val context: Context) {
     }
 
     fun recentWeightedEstimate(limit: Int = 10): Int? {
-        return recentDailyWeightedEstimate(limit)
+        return recentIncludedEventWeightedEstimate(limit) ?: recentDailyWeightedEstimate(limit)
     }
 
     fun capacityStats(): CapacityStats {
@@ -1337,6 +1337,24 @@ class BatteryCapacityEstimator(private val context: Context) {
 
         val weightedTotal = readings.sumOf { it.averageCapacityMah.toLong() * it.sampleCount.toLong() }
         return (weightedTotal.toDouble() / totalCount).roundToInt()
+    }
+
+    private fun recentIncludedEventWeightedEstimate(limitDays: Int = 10): Int? {
+        val events = readCapacityEvents(includeExcluded = false)
+        if (events.isEmpty()) return null
+
+        val recentDays = events
+            .map { dayStartMs(it.endTimestampMs) }
+            .distinct()
+            .takeLast(limitDays.coerceAtLeast(1))
+            .toSet()
+        val recentEvents = events.filter { dayStartMs(it.endTimestampMs) in recentDays }
+        if (recentEvents.isEmpty()) return null
+
+        return recentEvents
+            .map { it.peukertAdjustedCapacityMah ?: it.capacityEstimateMah }
+            .average()
+            .roundToInt()
     }
 
     private fun appendMovingAverageReading(timestampMs: Long, capacityMah: Int) {
