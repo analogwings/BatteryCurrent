@@ -2122,11 +2122,29 @@ class BatteryCurrentService : Service() {
             setPadding(14, 12, 14, 12)
             alpha = if (event.isExcluded) 0.58f else 1.0f
 
-            addView(TextView(this@BatteryCurrentService).apply {
-                text = "Event $eventNumber (${event.direction})${if (event.isExcluded) " - Excluded" else ""}"
-                textSize = 12f
-                setTypeface(Typeface.MONOSPACE, Typeface.BOLD)
-                setTextColor(if (event.isExcluded) palette.mutedText else palette.estimateLabel)
+            addView(LinearLayout(this@BatteryCurrentService).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                addView(TextView(this@BatteryCurrentService).apply {
+                    text = "Event $eventNumber (${event.direction})${if (event.isExcluded) " - Excluded" else ""}"
+                    textSize = 12f
+                    setTypeface(Typeface.MONOSPACE, Typeface.BOLD)
+                    setTextColor(if (event.isExcluded) palette.mutedText else palette.estimateLabel)
+                    setSingleLine(true)
+                }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+                addView(Button(this@BatteryCurrentService).apply {
+                    styleGraphMenuButton(
+                        this,
+                        textSizeSp = 11f,
+                        textColor = if (event.isExcluded) palette.cool else graphDischargeTextColor
+                    )
+                    text = if (event.isExcluded) "Restore" else "Exclude"
+                    minWidth = 112
+                    minHeight = 42
+                    setOnClickListener {
+                        showCapacityEventExcludeConfirmation(dayTimestampMs, event)
+                    }
+                })
             })
             addCapacityEventLine("Start", timeFormat.format(Date(event.startTimestampMs)))
             addCapacityEventLine("End", timeFormat.format(Date(event.endTimestampMs)))
@@ -2138,22 +2156,6 @@ class BatteryCurrentService : Service() {
             event.peukertAdjustedCapacityMah?.let {
                 addCapacityEventLine("Peukert adjusted", String.format(Locale.US, "%d mAh", it))
             }
-            addView(Button(this@BatteryCurrentService).apply {
-                styleGraphMenuButton(
-                    this,
-                    textColor = if (event.isExcluded) palette.cool else graphDischargeTextColor
-                )
-                text = if (event.isExcluded) "Restore" else "Exclude"
-                setOnClickListener {
-                    showCapacityEventExcludeConfirmation(dayTimestampMs, event)
-                }
-            }, LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.WRAP_CONTENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-            ).apply {
-                gravity = Gravity.END
-                setMargins(0, 6, 0, 0)
-            })
         }, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT,
             LinearLayout.LayoutParams.WRAP_CONTENT
@@ -2175,20 +2177,22 @@ class BatteryCurrentService : Service() {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             background = graphPopupBackground(palette)
-            setPadding(14, 10, 14, 10)
+            setPadding(10, 6, 10, 6)
             elevation = 34f
 
             addView(TextView(this@BatteryCurrentService).apply {
-                text = if (excluding) "Exclude this estimate from averages?" else "Restore this estimate to averages?"
-                textSize = 12f
+                text = if (excluding) "Exclude?" else "Restore?"
+                textSize = 11f
                 setTypeface(typeface, Typeface.BOLD)
                 setTextColor(palette.text)
                 setSingleLine(true)
-            }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+            }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 0.9f))
 
             addView(Button(this@BatteryCurrentService).apply {
-                styleGraphMenuButton(this, textColor = if (excluding) graphDischargeTextColor else palette.cool)
-                text = if (excluding) "Exclude" else "Restore"
+                styleGraphMenuButton(this, textSizeSp = 11f, textColor = if (excluding) graphDischargeTextColor else palette.cool)
+                text = "Yes"
+                minWidth = 64
+                minHeight = 40
                 setOnClickListener {
                     if (capacityEstimator.setCapacityEventExcluded(event.eventId, excluding)) {
                         Toast.makeText(
@@ -2203,13 +2207,15 @@ class BatteryCurrentService : Service() {
                     showCapacityEventDetailsPopup(dayTimestampMs)
                     updateGraphOverlay()
                 }
-            })
+            }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 0.55f))
 
             addView(Button(this@BatteryCurrentService).apply {
-                styleGraphMenuButton(this)
-                text = "Cancel"
+                styleGraphMenuButton(this, textSizeSp = 11f)
+                text = "No"
+                minWidth = 56
+                minHeight = 40
                 setOnClickListener { removeCapacityEventActionPopup() }
-            })
+            }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 0.45f))
         }
 
         capacityEventActionPopupView = popup
@@ -2218,7 +2224,7 @@ class BatteryCurrentService : Service() {
             LinearLayout.LayoutParams.MATCH_PARENT,
             LinearLayout.LayoutParams.WRAP_CONTENT
         ).apply {
-            setMargins(0, 8, 0, 4)
+            setMargins(0, 3, 0, 0)
         })
     }
 
