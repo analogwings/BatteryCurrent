@@ -213,7 +213,8 @@ def build_manual():
     doc.add_paragraph(
         "When BatteryCurrent starts, the startup page provides monitoring controls, foreground display options, original battery capacity entry, "
         "and a calibration setup launcher. Starting monitoring opens the foreground display and shows the current live values. "
-        "On the first run the foreground display opens near the center of the display. On later runs it reopens at the last dragged position."
+        "On the first run the foreground display opens near the center of the display. On later runs it reopens at the last dragged position. "
+        "The startup page also includes a User manual link that opens https://www.analogwings.com/batterycurrent/BC_userman.pdf."
     )
     add_numbered(doc, [
         "Open BatteryCurrent from the app launcher.",
@@ -223,6 +224,7 @@ def build_manual():
     ])
     add_key_value_table(doc, [
         ("X button", "Closes the startup page without changing the monitoring state."),
+        ("User manual", "Opens the online PDF manual in the browser: https://www.analogwings.com/batterycurrent/BC_userman.pdf."),
         ("Reset foreground display", "Moves the floating display back to the center if it was dragged to an unreachable edge."),
         ("Calibration setup", "Starts the guided calibration flow. The button reads Start when inactive and ON while armed or running."),
         ("Light-theme foreground display", "Switches the foreground overlay and chart popups to a light beige theme with higher-contrast graph, table, button, and text colors."),
@@ -346,6 +348,8 @@ def build_manual():
         "When a calibration result exists, the chart capacity line shows both the fixed calibration value and an adjusted value that reflects later trend movement.",
         "Tap the Stats button to review equivalent full cycles and capacity statistics. The 0.2C-normalized capacity uses the battery capacity reference and learned load sensitivity so low-current discharge is not treated as directly equivalent to higher-current discharge.",
         "The Stats page also contains shortcuts for Charge History and SOC Linearity, keeping the main graph controls less crowded.",
+        "Tap a day in Charge History to review the individual qualifying events for that day. Dubious or outlier programmable-window events can be excluded from averages and later restored without deleting the raw event record.",
+        "Excluded events are ignored by daily averages, moving averages, and load-sensitivity calculations, but remain visible in the history so the user can audit what changed.",
         "If no calibration result exists yet, the chart falls back to showing the configured-window extrapolated estimate.",
     ])
 
@@ -384,6 +388,8 @@ def build_manual():
         "SOC bucket data is collected during normal discharge, including during calibration.",
         "The SOC curve plots individual bucket samples as dots and draws a piecewise linear line through the average for each bucket.",
         "Outlier points can reveal noisy battery-percentage reporting, load effects, or areas where the phone's fuel gauge is less linear.",
+        "Only a balanced sample of recent points is displayed so the plot remains readable, while bucket averages continue to preserve learned behavior across the full SOC range.",
+        "The 90% to 100% bucket is deliberately strict: it is learned only from discharge segments that start from a reported 100% and complete to 90%, because the time spent saturated at 100% can otherwise distort this region.",
         "The load sensitivity line reports k with two decimals and a short comment such as k=1.00 (excellent), k=1.12 (mild), k=1.22 (noticeable), k=1.35 (high sag), or k>1.50 (check data).",
         "This load-sensitivity value is best treated as a phone-specific load sensitivity index, not a laboratory Peukert constant.",
     ])
