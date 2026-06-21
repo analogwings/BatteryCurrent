@@ -8,8 +8,21 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+function Get-CommandText {
+    param([scriptblock]$Command)
+
+    $output = @(& $Command)
+    if ($LASTEXITCODE -ne 0 -or $output.Count -eq 0) {
+        return ""
+    }
+    return (($output -join "`n").Trim())
+}
+
 function Require-MainBranch {
-    $branch = (git branch --show-current).Trim()
+    $branch = Get-CommandText { git branch --show-current }
+    if ([string]::IsNullOrWhiteSpace($branch)) {
+        throw "Current checkout is detached from a branch. Run 'git switch main' before releasing."
+    }
     if ($branch -ne "main") {
         throw "Current branch '$branch' is not 'main'. BatteryCurrent releases are rolled from main."
     }
@@ -84,17 +97,28 @@ function Git-CommitIfNeeded {
     }
 }
 
+function Require-ReleaseTagAvailable {
+    param([string]$TagName)
+
+    $existingTagCommit = Get-CommandText { git rev-parse -q --verify "refs/tags/$TagName^{}" }
+    if (-not [string]::IsNullOrWhiteSpace($existingTagCommit)) {
+        throw "Release tag '$TagName' already exists at $existingTagCommit. Build from that tag, or bump appVersionName/appVersionCode before rolling a new release."
+    }
+}
+
 function Ensure-ReleaseTag {
     param(
         [string]$TagName,
         [string]$TagMessage
     )
 
-    $headCommit = (git rev-parse HEAD).Trim()
-    $existingTagCommit = (git rev-parse -q --verify "refs/tags/$TagName^{}" 2>$null)
+    $headCommit = Get-CommandText { git rev-parse HEAD }
+    if ([string]::IsNullOrWhiteSpace($headCommit)) {
+        throw "Unable to determine current HEAD commit."
+    }
 
-    if ($LASTEXITCODE -eq 0 -and $existingTagCommit) {
-        $existingTagCommit = $existingTagCommit.Trim()
+    $existingTagCommit = Get-CommandText { git rev-parse -q --verify "refs/tags/$TagName^{}" }
+    if (-not [string]::IsNullOrWhiteSpace($existingTagCommit)) {
         if ($existingTagCommit -ne $headCommit) {
             throw "Tag '$TagName' already exists, but it points to $existingTagCommit instead of current release commit $headCommit. Do not overwrite it automatically."
         }
@@ -104,16 +128,6 @@ function Ensure-ReleaseTag {
 
     git tag -a $TagName -m $TagMessage
     Write-Host "Created release tag: $TagName" -ForegroundColor Green
-}
-
-function Require-ReleaseTagAvailable {
-    param([string]$TagName)
-
-    $existingTagCommit = (git rev-parse -q --verify "refs/tags/$TagName^{}" 2>$null)
-    if ($LASTEXITCODE -eq 0 -and $existingTagCommit) {
-        $existingTagCommit = $existingTagCommit.Trim()
-        throw "Release tag '$TagName' already exists at $existingTagCommit. Build from that tag, or bump appVersionName/appVersionCode before rolling a new release."
-    }
 }
 
 Require-MainBranch
