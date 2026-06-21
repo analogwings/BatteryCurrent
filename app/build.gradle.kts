@@ -7,8 +7,8 @@ providers.gradleProperty("codexBuildDir").orNull?.let { customBuildDir ->
     layout.buildDirectory.set(file(customBuildDir))
 }
 
-val appVersionCode = 105
-val appVersionName = "1.05"
+val appVersionCode = 106
+val appVersionName = "dev-1.06"
 val appDisplayVersion = "$appVersionName ($appVersionCode)"
 val appDebugDisplayVersion =
     if (appVersionName.startsWith("dev-")) appDisplayVersion else "$appVersionName-dev ($appVersionCode)"
