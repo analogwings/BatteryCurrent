@@ -4,6 +4,9 @@
 /.android-user-home
 /.java-user-home
 /.codex-build
+/.codex-tmp
+/app/.codex-build
+/app/release
 /.kotlin
 /.git-blocked*
 /git-data
@@ -11,6 +14,7 @@
 /backups
 /docs/manual/rendered
 /docs/manual/tmp
+/docs/foreground_recording.mp4
 /local.properties
 /.idea/caches
 /.idea/libraries
