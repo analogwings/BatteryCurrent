@@ -2189,7 +2189,7 @@ class BatteryCurrentService : Service() {
             elevation = 34f
 
             addView(TextView(this@BatteryCurrentService).apply {
-                text = if (excluding) "Exclude this estimate from averages?" else "Restore this estimate to averages?"
+                text = if (excluding) "Exclude?" else "Restore?"
                 textSize = 12f
                 setTypeface(typeface, Typeface.BOLD)
                 setTextColor(palette.text)
@@ -2198,7 +2198,7 @@ class BatteryCurrentService : Service() {
 
             addView(Button(this@BatteryCurrentService).apply {
                 styleGraphMenuButton(this, textColor = if (excluding) graphDischargeTextColor else palette.cool)
-                text = if (excluding) "Exclude" else "Restore"
+                text = "Yes"
                 setOnClickListener {
                     val historyWasOpen = capacityHistoryPopupView != null
                     if (capacityEstimator.setCapacityEventExcluded(event.eventId, excluding)) {
@@ -2222,7 +2222,7 @@ class BatteryCurrentService : Service() {
 
             addView(Button(this@BatteryCurrentService).apply {
                 styleGraphMenuButton(this)
-                text = "Cancel"
+                text = "No"
                 setOnClickListener { removeCapacityEventActionPopup() }
             })
         }

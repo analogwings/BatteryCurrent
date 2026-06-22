@@ -1341,20 +1341,7 @@ class BatteryCapacityEstimator(private val context: Context) {
 
     private fun recentIncludedEventWeightedEstimate(limitDays: Int = 10): Int? {
         val events = readCapacityEvents(includeExcluded = false)
-        if (events.isEmpty()) return null
-
-        val recentDays = events
-            .map { dayStartMs(it.endTimestampMs) }
-            .distinct()
-            .takeLast(limitDays.coerceAtLeast(1))
-            .toSet()
-        val recentEvents = events.filter { dayStartMs(it.endTimestampMs) in recentDays }
-        if (recentEvents.isEmpty()) return null
-
-        return recentEvents
-            .map { it.peukertAdjustedCapacityMah ?: it.capacityEstimateMah }
-            .average()
-            .roundToInt()
+        return includedEventWeightedEstimate(events, limitDays)
     }
 
     private fun appendMovingAverageReading(timestampMs: Long, capacityMah: Int) {
@@ -1515,7 +1502,38 @@ class BatteryCapacityEstimator(private val context: Context) {
         return if (direction == CHARGING) "charge" else "discharge"
     }
 
-    private companion object {
+    internal companion object {
+        fun includedEventWeightedEstimate(
+            events: List<CapacityEventSummary>,
+            limitDays: Int = 10
+        ): Int? {
+            val includedEvents = events.filterNot { it.isExcluded }
+            if (includedEvents.isEmpty()) return null
+
+            val recentDays = includedEvents
+                .map { dayStartMsForEstimate(it.endTimestampMs) }
+                .distinct()
+                .takeLast(limitDays.coerceAtLeast(1))
+                .toSet()
+            val recentEvents = includedEvents.filter { dayStartMsForEstimate(it.endTimestampMs) in recentDays }
+            if (recentEvents.isEmpty()) return null
+
+            return recentEvents
+                .map { it.peukertAdjustedCapacityMah ?: it.capacityEstimateMah }
+                .average()
+                .roundToInt()
+        }
+
+        private fun dayStartMsForEstimate(timestampMs: Long): Long {
+            return Calendar.getInstance().apply {
+                timeInMillis = timestampMs
+                set(Calendar.HOUR_OF_DAY, 0)
+                set(Calendar.MINUTE, 0)
+                set(Calendar.SECOND, 0)
+                set(Calendar.MILLISECOND, 0)
+            }.timeInMillis
+        }
+
         private const val MINIMUM_CURRENT_MA = 20.0
         private const val CHARGING = 1
         private const val DISCHARGING = -1
