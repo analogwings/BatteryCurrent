@@ -22,7 +22,8 @@ class BatteryCapacityEstimator(private val context: Context) {
     data class DailyEstimateSummary(
         val timestampMs: Long,
         val averageCapacityMah: Int,
-        val sampleCount: Int
+        val sampleCount: Int,
+        val isExcludedOnly: Boolean = false
     )
 
     data class CapacityEventSummary(
@@ -193,15 +194,31 @@ class BatteryCapacityEstimator(private val context: Context) {
     }
 
     fun recentDailyEstimates(limit: Int = 10): List<DailyEstimateSummary> {
-        return readReadings()
-            .takeLast(limit.coerceAtLeast(1))
+        val includedRows = readReadings().associateBy { it.timestampMs }
+        val allEventDays = readCapacityEvents(includeExcluded = true)
+            .groupBy { dayStartMs(it.endTimestampMs) }
+        val rows = (includedRows.keys + allEventDays.keys)
+            .distinct()
+            .sorted()
             .map { reading ->
-                DailyEstimateSummary(
-                    timestampMs = reading.timestampMs,
-                    averageCapacityMah = reading.averageCapacityMah,
-                    sampleCount = reading.sampleCount
-                )
+                val included = includedRows[reading]
+                if (included != null) {
+                    DailyEstimateSummary(
+                        timestampMs = included.timestampMs,
+                        averageCapacityMah = included.averageCapacityMah,
+                        sampleCount = included.sampleCount
+                    )
+                } else {
+                    val events = allEventDays[reading].orEmpty()
+                    DailyEstimateSummary(
+                        timestampMs = reading,
+                        averageCapacityMah = 0,
+                        sampleCount = events.size,
+                        isExcludedOnly = true
+                    )
+                }
             }
+        return rows.takeLast(limit.coerceAtLeast(1))
     }
 
     fun estimateNearTimestamp(timestampMs: Long, windowDays: Int = 3): Int? {

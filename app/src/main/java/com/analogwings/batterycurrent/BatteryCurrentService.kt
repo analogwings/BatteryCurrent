@@ -1979,8 +1979,9 @@ class BatteryCurrentService : Service() {
                         rows.forEach { row ->
                             addCapacityHistoryRow(
                                 dateFormat.format(Date(row.timestampMs)),
-                                row.averageCapacityMah.toString(),
+                                if (row.isExcludedOnly) "--" else row.averageCapacityMah.toString(),
                                 row.sampleCount.toString(),
+                                isMuted = row.isExcludedOnly,
                                 onClick = { showCapacityEventDetailsPopup(row.timestampMs) }
                             )
                         }
@@ -2008,6 +2009,7 @@ class BatteryCurrentService : Service() {
         capacityText: String,
         countText: String,
         isHeader: Boolean = false,
+        isMuted: Boolean = false,
         onClick: (() -> Unit)? = null
     ) {
         addView(LinearLayout(this@BatteryCurrentService).apply {
@@ -2023,9 +2025,10 @@ class BatteryCurrentService : Service() {
                 setOnClickListener { onClick() }
             }
 
-            addCapacityHistoryCell(dateText, 1.9f, Gravity.START, isHeader)
-            addCapacityHistoryCell(capacityText, 1.0f, Gravity.END, isHeader)
-            addCapacityHistoryCell(countText, 1.0f, Gravity.END, isHeader)
+            alpha = if (isMuted) 0.62f else 1.0f
+            addCapacityHistoryCell(dateText, 1.9f, Gravity.START, isHeader, isMuted)
+            addCapacityHistoryCell(capacityText, 1.0f, Gravity.END, isHeader, isMuted)
+            addCapacityHistoryCell(countText, 1.0f, Gravity.END, isHeader, isMuted)
         })
     }
 
@@ -2033,13 +2036,20 @@ class BatteryCurrentService : Service() {
         value: String,
         weight: Float,
         gravityValue: Int,
-        isHeader: Boolean
+        isHeader: Boolean,
+        isMuted: Boolean = false
     ) {
         addView(TextView(this@BatteryCurrentService).apply {
             val palette = graphPalette()
             text = value
             textSize = if (isHeader) 11f else 12f
-            setTextColor(if (isHeader) palette.estimateLabel else palette.text)
+            setTextColor(
+                when {
+                    isHeader -> palette.estimateLabel
+                    isMuted -> palette.mutedText
+                    else -> palette.text
+                }
+            )
             setTypeface(Typeface.MONOSPACE, if (isHeader) Typeface.BOLD else Typeface.NORMAL)
             gravity = gravityValue
             setSingleLine(true)

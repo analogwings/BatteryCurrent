@@ -52,6 +52,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.unit.dp
 import com.analogwings.batterycurrent.ui.theme.BatteryCurrentTheme
 
+private const val USER_MANUAL_URL = "https://analogwings.com/batterycurrent/BC_userman.pdf"
+
 class MainActivity : ComponentActivity() {
 
     private var waitingForOverlayPermission = false
@@ -116,6 +118,7 @@ class MainActivity : ComponentActivity() {
                             FullDischargeTest.setModeEnabled(this, false)
                             fullDischargeModeState.value = false
                         },
+                        onOpenUserManual = { openUserManual() },
                         onClose = { finish() }
                     )
                 }
@@ -240,6 +243,10 @@ class MainActivity : ComponentActivity() {
             startService(intent)
         }
     }
+
+    private fun openUserManual() {
+        startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(USER_MANUAL_URL)))
+    }
 }
 
 @Composable
@@ -260,6 +267,7 @@ private fun BatteryCurrentScreen(
     onOriginalCapacitySkipped: () -> Unit,
     onFullDischargeStart: () -> Unit,
     onFullDischargeModeOff: () -> Unit,
+    onOpenUserManual: () -> Unit,
     onClose: () -> Unit
 ) {
     var lightOverlayEnabled by remember { mutableStateOf(initialLightOverlayEnabled) }
@@ -348,7 +356,16 @@ private fun BatteryCurrentScreen(
             style = MaterialTheme.typography.bodySmall
         )
 
-        Spacer(modifier = Modifier.height(24.dp))
+        Spacer(modifier = Modifier.height(18.dp))
+
+        SettingRow(label = "User manual") {
+            StartupActionButton(
+                text = "Open",
+                onClick = onOpenUserManual
+            )
+        }
+
+        Spacer(modifier = Modifier.height(12.dp))
 
         SettingRow(label = "Reset foreground display to centre") {
             StartupActionButton(
