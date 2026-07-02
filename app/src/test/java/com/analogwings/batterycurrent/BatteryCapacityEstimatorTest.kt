@@ -43,6 +43,39 @@ class BatteryCapacityEstimatorTest {
         assertNull(BatteryCapacityEstimator.includedEventWeightedEstimate(events))
     }
 
+    @Test
+    fun filteredSocBucketAveragesForLinearity_requiresMoreTopBucketSamples() {
+        val buckets = listOf(
+            socBucket(startPct = 20, learnedMah = 420.0, sampleCount = 3),
+            socBucket(startPct = 30, learnedMah = 430.0, sampleCount = 3),
+            socBucket(startPct = 40, learnedMah = 425.0, sampleCount = 3),
+            socBucket(startPct = 50, learnedMah = 418.0, sampleCount = 3),
+            socBucket(startPct = 90, learnedMah = 620.0, sampleCount = 4)
+        )
+
+        val filtered = BatteryCapacityEstimator.filteredSocBucketAveragesForLinearity(buckets)
+
+        assertEquals(listOf(20, 30, 40, 50), filtered.map { it.bucketStartPct })
+    }
+
+    @Test
+    fun filteredSocBucketAveragesForLinearity_removesSparseHighEndOutlierFromFittedCurve() {
+        val buckets = listOf(
+            socBucket(startPct = 20, learnedMah = 410.0, sampleCount = 8),
+            socBucket(startPct = 30, learnedMah = 420.0, sampleCount = 8),
+            socBucket(startPct = 40, learnedMah = 415.0, sampleCount = 8),
+            socBucket(startPct = 50, learnedMah = 430.0, sampleCount = 8),
+            socBucket(startPct = 60, learnedMah = 425.0, sampleCount = 8),
+            socBucket(startPct = 70, learnedMah = 418.0, sampleCount = 8),
+            socBucket(startPct = 80, learnedMah = 422.0, sampleCount = 8),
+            socBucket(startPct = 90, learnedMah = 610.0, sampleCount = 5)
+        )
+
+        val filtered = BatteryCapacityEstimator.filteredSocBucketAveragesForLinearity(buckets)
+
+        assertEquals(listOf(20, 30, 40, 50, 60, 70, 80), filtered.map { it.bucketStartPct })
+    }
+
     private fun event(
         endTimestampMs: Long,
         capacityMah: Int,
@@ -62,6 +95,22 @@ class BatteryCapacityEstimatorTest {
             peukertK = null,
             peukertAdjustedCapacityMah = peukertAdjustedCapacityMah,
             isExcluded = isExcluded
+        )
+    }
+
+    private fun socBucket(
+        startPct: Int,
+        learnedMah: Double,
+        sampleCount: Int
+    ): BatteryCapacityEstimator.SocBucketSummary {
+        return BatteryCapacityEstimator.SocBucketSummary(
+            bucketStartPct = startPct,
+            bucketEndPct = (startPct + 10).coerceAtMost(100),
+            learnedMah = learnedMah,
+            learnedWh = null,
+            sampleCount = sampleCount,
+            avgCurrentMa = null,
+            avgTempC = null
         )
     }
 }

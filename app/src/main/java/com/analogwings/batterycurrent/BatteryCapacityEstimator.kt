@@ -439,9 +439,7 @@ class BatteryCapacityEstimator(private val context: Context) {
     }
 
     private fun socBucketLinearityPoints(): List<SocLinearityPoint> {
-        val learnedBuckets = socBucketSummaries()
-            .filter { it.sampleCount >= MIN_SOC_BUCKET_AVERAGE_SAMPLES && it.learnedMah != null && it.learnedMah > 0.0 }
-            .sortedBy { it.bucketStartPct }
+        val learnedBuckets = filteredSocBucketAveragesForLinearity(socBucketSummaries())
         if (learnedBuckets.isEmpty()) return emptyList()
 
         val totalSamples = learnedBuckets.sumOf { it.sampleCount }
@@ -1541,6 +1539,65 @@ class BatteryCapacityEstimator(private val context: Context) {
                 .roundToInt()
         }
 
+        fun filteredSocBucketAveragesForLinearity(
+            buckets: List<SocBucketSummary>
+        ): List<SocBucketSummary> {
+            val sampleQualified = buckets
+                .filter { bucket ->
+                    val learnedMah = bucket.learnedMah
+                    learnedMah != null &&
+                            learnedMah > 0.0 &&
+                            bucket.sampleCount >= minimumSamplesForSocBucketAverage(bucket)
+                }
+                .sortedBy { it.bucketStartPct }
+            if (sampleQualified.size < MIN_SOC_BUCKET_AVERAGE_OUTLIER_BUCKETS) return sampleQualified
+
+            val learnedValues = sampleQualified.mapNotNull { it.learnedMah }.sorted()
+            val q1 = percentileForSorted(learnedValues, 0.25)
+            val median = percentileForSorted(learnedValues, 0.50)
+            val q3 = percentileForSorted(learnedValues, 0.75)
+            val iqr = q3 - q1
+            if (median <= 0.0 || iqr <= 0.0) return sampleQualified
+
+            val lowerFence = maxOf(
+                0.0,
+                q1 - SOC_BUCKET_AVERAGE_OUTLIER_IQR_MULTIPLIER * iqr,
+                median * SOC_BUCKET_AVERAGE_MIN_MEDIAN_RATIO
+            )
+            val upperFence = minOf(
+                q3 + SOC_BUCKET_AVERAGE_OUTLIER_IQR_MULTIPLIER * iqr,
+                median * SOC_BUCKET_AVERAGE_MAX_MEDIAN_RATIO
+            )
+            val filtered = sampleQualified.filter { bucket ->
+                val learnedMah = bucket.learnedMah ?: return@filter false
+                learnedMah in lowerFence..upperFence
+            }
+
+            return if (filtered.size >= MIN_SOC_BUCKET_AVERAGE_OUTLIER_BUCKETS - 1) {
+                filtered
+            } else {
+                sampleQualified
+            }
+        }
+
+        private fun minimumSamplesForSocBucketAverage(bucket: SocBucketSummary): Int {
+            return if (bucket.bucketStartPct >= TOP_SOC_BUCKET_START_PERCENT) {
+                MIN_TOP_SOC_BUCKET_AVERAGE_SAMPLES
+            } else {
+                MIN_SOC_BUCKET_AVERAGE_SAMPLES
+            }
+        }
+
+        private fun percentileForSorted(sortedValues: List<Double>, fraction: Double): Double {
+            if (sortedValues.isEmpty()) return 0.0
+            val clampedFraction = fraction.coerceIn(0.0, 1.0)
+            val index = clampedFraction * (sortedValues.size - 1)
+            val lowerIndex = index.toInt().coerceIn(0, sortedValues.lastIndex)
+            val upperIndex = (lowerIndex + 1).coerceAtMost(sortedValues.lastIndex)
+            val weight = index - lowerIndex
+            return sortedValues[lowerIndex] * (1.0 - weight) + sortedValues[upperIndex] * weight
+        }
+
         private fun dayStartMsForEstimate(timestampMs: Long): Long {
             return Calendar.getInstance().apply {
                 timeInMillis = timestampMs
@@ -1594,6 +1651,11 @@ class BatteryCapacityEstimator(private val context: Context) {
         private const val MAX_SOC_BUCKET_SAMPLES_PER_BUCKET = 200
         private const val MAX_SOC_LINEARITY_DISPLAY_SAMPLES = 100
         private const val MIN_SOC_BUCKET_AVERAGE_SAMPLES = 3
+        private const val MIN_TOP_SOC_BUCKET_AVERAGE_SAMPLES = 5
+        private const val MIN_SOC_BUCKET_AVERAGE_OUTLIER_BUCKETS = 5
+        private const val SOC_BUCKET_AVERAGE_OUTLIER_IQR_MULTIPLIER = 1.5
+        private const val SOC_BUCKET_AVERAGE_MIN_MEDIAN_RATIO = 0.70
+        private const val SOC_BUCKET_AVERAGE_MAX_MEDIAN_RATIO = 1.30
         private const val MIN_SOC_OUTLIER_FILTER_SAMPLES = 8
         private const val SOC_OUTLIER_IQR_MULTIPLIER = 1.5
         private const val SOC_OUTLIER_MIN_MEDIAN_RATIO = 0.25
