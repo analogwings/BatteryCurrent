@@ -49,6 +49,7 @@ import java.util.Date
 import java.util.Locale
 import kotlin.math.abs
 import kotlin.math.ceil
+import kotlin.math.exp
 import kotlin.math.floor
 import kotlin.math.pow
 import kotlin.math.roundToInt
@@ -3312,6 +3313,7 @@ class BatteryCurrentService : Service() {
         private var customDurationMs: Float? = null
         private var customRightAxisMin: Double? = null
         private var customRightAxisMax: Double? = null
+        private val rightAxisAverageTimeConstantMs = 60L * 60L * 1000L
         private var activeZoomAxis: ZoomAxis? = null
         private var isViewportGestureActive = false
         private var isRightAxisLabelTouchActive = false
@@ -4127,12 +4129,21 @@ class BatteryCurrentService : Service() {
             val visibleEndMs = startMs + visibleDurationMs.toLong()
             val runningPoints = ArrayList<TracePoint>()
             var average = 0.0
-            var sampleCount = 0
+            var lastAverageTimestampMs: Long? = null
+            var hasAverage = false
 
             allPoints.forEach { point ->
                 val value = rightAxisValue(point) ?: return@forEach
-                sampleCount += 1
-                average += (value - average) / sampleCount
+                val previousTimestampMs = lastAverageTimestampMs
+                average = if (!hasAverage || previousTimestampMs == null) {
+                    value
+                } else {
+                    val deltaMs = (point.timestampMs - previousTimestampMs).coerceAtLeast(0L)
+                    val alpha = 1.0 - exp(-deltaMs.toDouble() / rightAxisAverageTimeConstantMs.toDouble())
+                    average + alpha * (value - average)
+                }
+                hasAverage = true
+                lastAverageTimestampMs = point.timestampMs
 
                 if (point.timestampMs < startMs || point.timestampMs > visibleEndMs) return@forEach
                 val elapsedMs = point.timestampMs - startMs
