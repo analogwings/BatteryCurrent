@@ -1116,9 +1116,19 @@ class BatteryCurrentService : Service() {
     }
 
     private fun formatCurrentText(): String {
+        if (!isChargeUnitSelected()) {
+            return formatPowerText()
+        }
         return latestRoundedMilliAmps?.let {
             String.format(Locale.US, "%dmA", it)
         } ?: "--mA"
+    }
+
+    private fun formatPowerText(): String {
+        val currentMa = latestRoundedMilliAmps ?: return "--mW"
+        val voltageMv = latestVoltageMv ?: return "--mW"
+        val milliWatts = currentMa * (voltageMv / 1000.0)
+        return String.format(Locale.US, "%.0fmW", milliWatts)
     }
 
     private fun formatTemperatureText(): String {
@@ -2564,7 +2574,7 @@ class BatteryCurrentService : Service() {
 
             addView(createDisplayToggleRow(
                 "Time" to displayTimeKey,
-                "Current" to displayCurrentKey,
+                currentDisplayLabel() to displayCurrentKey,
                 "Temp" to displayTemperatureKey
             ))
             addView(createDisplayToggleRow(
@@ -2667,6 +2677,10 @@ class BatteryCurrentService : Service() {
 
     private fun energyDisplayLabel(): String {
         return if (isChargeUnitSelected()) "Charge" else "Energy"
+    }
+
+    private fun currentDisplayLabel(): String {
+        return if (isChargeUnitSelected()) "Current" else "Power"
     }
 
     private fun setTemperatureToggleText(button: Button) {
@@ -3962,7 +3976,7 @@ class BatteryCurrentService : Service() {
         }
 
         private fun drawRightAxisUnitLabel(canvas: Canvas) {
-            val mode = rightAxisMode ?: run {
+            rightAxisMode ?: run {
                 rightAxisLabelHitRect.setEmpty()
                 return
             }
@@ -3974,7 +3988,7 @@ class BatteryCurrentService : Service() {
             canvas.drawRoundRect(rightAxisLabelHitRect, 10f, 10f, rightAxisLabelBackgroundPaint)
             canvas.save()
             canvas.rotate(90f, labelX, labelY)
-            canvas.drawText(mode.label, labelX, labelY + 10f, axisTextPaint)
+            canvas.drawText(rightAxisUnitLabel(), labelX, labelY + 10f, axisTextPaint)
             canvas.restore()
         }
 
@@ -4188,7 +4202,7 @@ class BatteryCurrentService : Service() {
         }
 
         private fun rightAxisTraceColor(value: Double): Int {
-            return if (rightAxisMode == RightAxisMode.CURRENT) {
+            return if (isSignedRightAxisMode()) {
                 if (value >= 0.0) palette.rightAxisPositive else palette.rightAxisNegative
             } else {
                 palette.rightAxisPositive
@@ -4196,7 +4210,7 @@ class BatteryCurrentService : Service() {
         }
 
         private fun drawRightAxisZeroLine(canvas: Canvas, scale: RightAxisScale) {
-            if (rightAxisMode != RightAxisMode.CURRENT || scale.min > 0.0 || scale.max < 0.0) return
+            if (!isSignedRightAxisMode() || scale.min > 0.0 || scale.max < 0.0) return
 
             val y = yForRightAxisValue(0.0, scale)
             canvas.drawLine(plotBounds.left, y, plotBounds.right, y, rightAxisZeroLinePaint)
@@ -4333,7 +4347,7 @@ class BatteryCurrentService : Service() {
         private fun chooseAutoRightAxisScale(values: List<Double>): RightAxisScale? {
             if (values.isEmpty()) return null
 
-            val includeZero = rightAxisMode == RightAxisMode.CURRENT
+            val includeZero = isSignedRightAxisMode()
             val minValue = values.minOrNull() ?: return null
             val maxValue = values.maxOrNull() ?: return null
             val rawMin = if (includeZero) minOf(0.0, minValue) else minValue
@@ -4380,15 +4394,38 @@ class BatteryCurrentService : Service() {
                     if (useFahrenheit) it * 9.0 / 5.0 + 32.0 else it
                 }
                 RightAxisMode.VOLTAGE -> point.voltageMv?.let { it / 1000.0 }
-                RightAxisMode.CURRENT -> point.currentMilliAmps
+                RightAxisMode.CURRENT -> currentOrPowerValue(point)
             }
         }
 
         private fun formatRightAxisTick(value: Double): String {
             return when (rightAxisMode) {
                 RightAxisMode.VOLTAGE -> String.format(Locale.US, "%.2f", value)
+                RightAxisMode.CURRENT -> {
+                    if (isPowerRightAxisSelected()) String.format(Locale.US, "%.1f", value) else String.format(Locale.US, "%.0f", value)
+                }
                 else -> String.format(Locale.US, "%.0f", value)
             }
+        }
+
+        private fun rightAxisUnitLabel(): String {
+            val mode = rightAxisMode ?: return ""
+            return if (mode == RightAxisMode.CURRENT && isPowerRightAxisSelected()) "W" else mode.label
+        }
+
+        private fun currentOrPowerValue(point: EnergyPoint): Double? {
+            val currentMa = point.currentMilliAmps ?: return null
+            if (!isPowerRightAxisSelected()) return currentMa
+            val volts = point.voltageMv?.let { it / 1000.0 } ?: return null
+            return currentMa * volts / 1000.0
+        }
+
+        private fun isPowerRightAxisSelected(): Boolean {
+            return displayUnit == ENERGY_UNIT_MWH
+        }
+
+        private fun isSignedRightAxisMode(): Boolean {
+            return rightAxisMode == RightAxisMode.CURRENT
         }
 
         private fun graphValue(point: EnergyPoint): Double {
