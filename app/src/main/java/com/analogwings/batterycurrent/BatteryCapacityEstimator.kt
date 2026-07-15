@@ -265,6 +265,17 @@ class BatteryCapacityEstimator(private val context: Context) {
             .sortedBy { it.startTimestampMs }
     }
 
+    fun dischargeCapacityEvents(): List<CapacityEventSummary> {
+        return readCapacityEvents(includeExcluded = false)
+            .filter { event ->
+                event.direction.equals("discharge", ignoreCase = true) &&
+                    event.avgCurrentMa != null &&
+                    event.avgCurrentMa > 0.0 &&
+                    event.capacityEstimateMah > 0
+            }
+            .sortedBy { it.endTimestampMs }
+    }
+
     fun setCapacityEventExcluded(eventId: String, excluded: Boolean): Boolean {
         if (!eventsFile.exists()) return false
         ensureEventsHeader(CAPACITY_EVENTS_HEADER)

@@ -51,6 +51,7 @@ import kotlin.math.abs
 import kotlin.math.ceil
 import kotlin.math.exp
 import kotlin.math.floor
+import kotlin.math.log10
 import kotlin.math.pow
 import kotlin.math.roundToInt
 
@@ -614,6 +615,25 @@ class BatteryCurrentService : Service() {
         val temperatureC: Double?,
         val voltageMv: Int?
     )
+
+    private data class CapacityRatePoint(
+        val cRate: Double,
+        val capacityMah: Double,
+        val source: CapacityRateSource
+    )
+
+    private enum class CapacityRateSource {
+        QUICK,
+        FULL
+    }
+
+    private data class CapacityFit(
+        val a: Double,
+        val b: Double,
+        val c: Double
+    ) {
+        fun valueAt(x: Double): Double = a + b * x + c * x * x
+    }
 
     private enum class RightAxisMode(val storageValue: String, val label: String) {
         BATTERY(RIGHT_AXIS_BATTERY, "Batt %"),
@@ -2474,6 +2494,17 @@ class BatteryCurrentService : Service() {
             addCapacityEventLine("Load sensitivity", stats.peukertK?.let { String.format(Locale.US, "k=%.2f", it) } ?: "learning")
             addCapacityEventLine("Charge eq. cycles", String.format(Locale.US, "%.2f", stats.chargeEquivalentCycles))
             addCapacityEventLine("Discharge eq. cycles", String.format(Locale.US, "%.2f", stats.dischargeEquivalentCycles))
+            addView(CapacityRateCurveView(
+                this@BatteryCurrentService,
+                palette
+            ).apply {
+                setPoints(capacityRateGraphPoints(stats.referenceCapacityMah))
+            }, LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                480
+            ).apply {
+                setMargins(0, 10, 0, 2)
+            })
 
             addStatsSection("Discharge", stats.dischargeStats)
             addStatsSection("Charge", stats.chargeStats)
@@ -2495,6 +2526,29 @@ class BatteryCurrentService : Service() {
         } catch (_: Exception) {
             capacityStatsPopupView = null
         }
+    }
+
+    private fun capacityRateGraphPoints(referenceCapacityMah: Int?): List<CapacityRatePoint> {
+        val reference = referenceCapacityMah?.takeIf { it > 0 }?.toDouble() ?: return emptyList()
+        val quickPoints = capacityEstimator.dischargeCapacityEvents().mapNotNull { event ->
+            val current = event.avgCurrentMa?.takeIf { it > 0.0 } ?: return@mapNotNull null
+            CapacityRatePoint(
+                cRate = current / reference,
+                capacityMah = event.capacityEstimateMah.toDouble(),
+                source = CapacityRateSource.QUICK
+            )
+        }
+        val fullPoints = FullDischargeTest.allResults(this).mapNotNull { result ->
+            val current = result.avgCurrentMa?.takeIf { it > 0.0 } ?: return@mapNotNull null
+            CapacityRatePoint(
+                cRate = current / reference,
+                capacityMah = result.capacityEstimateMah.toDouble(),
+                source = CapacityRateSource.FULL
+            )
+        }
+        return (quickPoints + fullPoints)
+            .filter { it.cRate > 0.0 && it.capacityMah > 0.0 }
+            .sortedBy { it.cRate }
     }
 
     private fun LinearLayout.addStatsSection(
@@ -2541,6 +2595,329 @@ class BatteryCurrentService : Service() {
             (view.parent as? LinearLayout)?.removeView(view)
         }
         capacityStatsPopupView = null
+    }
+
+    private inner class CapacityRateCurveView(
+        context: Context,
+        private val palette: GraphPalette
+    ) : View(context) {
+        private val points = ArrayList<CapacityRatePoint>()
+        private val plotBounds = RectF()
+        private val axisPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = capacityRateAxisColor()
+            style = Paint.Style.STROKE
+            strokeWidth = 2f
+        }
+        private val gridPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = capacityRateGridColor()
+            strokeWidth = if (palette.isLight) 1.6f else 1f
+        }
+        private val plotBackgroundPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = if (palette.isLight) {
+                Color.rgb(238, 229, 208)
+            } else {
+                Color.argb(22, 255, 255, 255)
+            }
+            style = Paint.Style.FILL
+        }
+        private val quickPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = capacityRateQuickColor()
+            style = Paint.Style.FILL
+        }
+        private val fullPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = capacityRateFullColor()
+            style = Paint.Style.FILL
+        }
+        private val markerStrokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = capacityRateAxisColor()
+            style = Paint.Style.STROKE
+            strokeWidth = if (palette.isLight) 1.4f else 0f
+        }
+        private val fitPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = capacityRateFitColor()
+            style = Paint.Style.STROKE
+            strokeWidth = 3f
+        }
+        private val labelPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = capacityRateLabelColor()
+            textSize = 20f
+            typeface = Typeface.MONOSPACE
+        }
+        private val titlePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = palette.text
+            textSize = 22f
+            typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
+        }
+
+        fun setPoints(items: List<CapacityRatePoint>) {
+            points.clear()
+            points.addAll(items)
+            invalidate()
+        }
+
+        override fun onDraw(canvas: Canvas) {
+            super.onDraw(canvas)
+            plotBounds.set(96f, 82f, width - 34f, height - 62f)
+            drawFrame(canvas)
+
+            if (points.isEmpty()) {
+                labelPaint.textAlign = Paint.Align.LEFT
+                canvas.drawText("No discharge capacity/current data yet", plotBounds.left + 20f, plotBounds.centerY(), labelPaint)
+                canvas.drawText("Quick and calibration discharge records will appear here.", plotBounds.left + 20f, plotBounds.centerY() + 30f, labelPaint)
+                return
+            }
+
+            val xMax = chooseAxisMax(points.maxOf { it.cRate }.coerceAtLeast(0.1))
+            val yMinMax = capacityAxisRange(points.map { it.capacityMah })
+            val yMin = yMinMax.first
+            val yMax = yMinMax.second
+            drawTicks(canvas, xMax, yMin, yMax)
+            drawFitCurve(canvas, xMax, yMin, yMax)
+            drawPoints(canvas, xMax, yMin, yMax)
+            drawLegend(canvas)
+        }
+
+        private fun drawFrame(canvas: Canvas) {
+            canvas.drawRoundRect(plotBounds, 8f, 8f, plotBackgroundPaint)
+            canvas.drawRect(plotBounds, axisPaint)
+            titlePaint.textAlign = Paint.Align.LEFT
+            canvas.drawText("Capacity vs discharge current", plotBounds.left, 26f, titlePaint)
+        }
+
+        private fun drawTicks(canvas: Canvas, xMax: Double, yMin: Double, yMax: Double) {
+            labelPaint.color = capacityRateLabelColor()
+            val xStep = chooseNiceStep(xMax / 4.0)
+            val yStep = chooseNiceStep((yMax - yMin).coerceAtLeast(1.0) / 4.0)
+
+            labelPaint.textAlign = Paint.Align.CENTER
+            var xTick = 0.0
+            while (xTick <= xMax + xStep * 0.5) {
+                val x = xForRate(xTick, xMax)
+                canvas.drawLine(x, plotBounds.top, x, plotBounds.bottom, gridPaint)
+                canvas.drawLine(x, plotBounds.bottom, x, plotBounds.bottom + 8f, axisPaint)
+                canvas.drawText(formatCRateTick(xTick), x, plotBounds.bottom + 30f, labelPaint)
+                xTick += xStep
+            }
+
+            labelPaint.textAlign = Paint.Align.RIGHT
+            var yTick = ceil(yMin / yStep) * yStep
+            while (yTick <= yMax + yStep * 0.5) {
+                val y = yForCapacity(yTick, yMin, yMax)
+                canvas.drawLine(plotBounds.left, y, plotBounds.right, y, gridPaint)
+                canvas.drawLine(plotBounds.left - 8f, y, plotBounds.left, y, axisPaint)
+                canvas.drawText(yTick.roundToInt().toString(), plotBounds.left - 14f, y + 7f, labelPaint)
+                yTick += yStep
+            }
+
+            labelPaint.textAlign = Paint.Align.CENTER
+            canvas.drawText("Discharge current (C)", plotBounds.centerX(), height - 14f, labelPaint)
+            canvas.save()
+            canvas.rotate(-90f, 24f, plotBounds.centerY())
+            canvas.drawText("Capacity (mAh)", 24f, plotBounds.centerY(), labelPaint)
+            canvas.restore()
+        }
+
+        private fun drawPoints(canvas: Canvas, xMax: Double, yMin: Double, yMax: Double) {
+            points.forEach { point ->
+                val x = xForRate(point.cRate, xMax)
+                val y = yForCapacity(point.capacityMah, yMin, yMax)
+                if (point.source == CapacityRateSource.FULL) {
+                    drawDiamond(canvas, x, y, 5f, fullPaint)
+                    drawDiamond(canvas, x, y, 5f, markerStrokePaint)
+                } else {
+                    canvas.drawCircle(x, y, 4.5f, quickPaint)
+                    if (palette.isLight) canvas.drawCircle(x, y, 4.5f, markerStrokePaint)
+                }
+            }
+        }
+
+        private fun drawFitCurve(canvas: Canvas, xMax: Double, yMin: Double, yMax: Double) {
+            val fit = fitCurve(points) ?: return
+            val path = Path()
+            val segments = 72
+            for (i in 0..segments) {
+                val xValue = xMax * i / segments.toDouble()
+                val yValue = fit.valueAt(xValue)
+                val x = xForRate(xValue, xMax)
+                val y = yForCapacity(yValue, yMin, yMax)
+                if (i == 0) path.moveTo(x, y) else path.lineTo(x, y)
+            }
+            canvas.drawPath(path, fitPaint)
+        }
+
+        private fun drawLegend(canvas: Canvas) {
+            val y = 56f
+            var x = plotBounds.left
+            labelPaint.color = capacityRateLegendColor()
+            labelPaint.textAlign = Paint.Align.LEFT
+            canvas.drawCircle(x + 8f, y - 6f, 4.5f, quickPaint)
+            if (palette.isLight) canvas.drawCircle(x + 8f, y - 6f, 4.5f, markerStrokePaint)
+            canvas.drawText("quick", x + 20f, y, labelPaint)
+            x += 112f
+            drawDiamond(canvas, x + 8f, y - 6f, 5f, fullPaint)
+            drawDiamond(canvas, x + 8f, y - 6f, 5f, markerStrokePaint)
+            canvas.drawText("full cal", x + 20f, y, labelPaint)
+            x += 132f
+            canvas.drawLine(x, y - 6f, x + 28f, y - 6f, fitPaint)
+            canvas.drawText("fit", x + 36f, y, labelPaint)
+            labelPaint.color = capacityRateLabelColor()
+        }
+
+        private fun drawDiamond(canvas: Canvas, x: Float, y: Float, radius: Float, paint: Paint) {
+            val path = Path().apply {
+                moveTo(x, y - radius)
+                lineTo(x + radius, y)
+                lineTo(x, y + radius)
+                lineTo(x - radius, y)
+                close()
+            }
+            canvas.drawPath(path, paint)
+        }
+
+        private fun capacityAxisRange(values: List<Double>): Pair<Double, Double> {
+            val minValue = values.minOrNull() ?: 0.0
+            val maxValue = values.maxOrNull() ?: 1.0
+            val range = (maxValue - minValue).coerceAtLeast(200.0)
+            val paddedMin = (minValue - range * 0.12).coerceAtLeast(0.0)
+            val paddedMax = maxValue + range * 0.12
+            val step = chooseNiceStep((paddedMax - paddedMin) / 4.0)
+            return floor(paddedMin / step) * step to ceil(paddedMax / step) * step
+        }
+
+        private fun xForRate(cRate: Double, xMax: Double): Float {
+            return plotBounds.left + (cRate.coerceIn(0.0, xMax) / xMax).toFloat() * plotBounds.width()
+        }
+
+        private fun yForCapacity(capacityMah: Double, yMin: Double, yMax: Double): Float {
+            val fraction = ((capacityMah.coerceIn(yMin, yMax) - yMin) / (yMax - yMin).coerceAtLeast(1.0)).toFloat()
+            return plotBounds.bottom - fraction * plotBounds.height()
+        }
+
+        private fun formatCRateTick(value: Double): String {
+            return if (value < 1.0) {
+                String.format(Locale.US, "%.2fC", value)
+            } else {
+                String.format(Locale.US, "%.0fC", value)
+            }
+        }
+
+        private fun capacityRateAxisColor(): Int {
+            return if (palette.isLight) Color.rgb(28, 24, 18) else palette.axis
+        }
+
+        private fun capacityRateGridColor(): Int {
+            return if (palette.isLight) Color.argb(185, 28, 24, 18) else palette.grid
+        }
+
+        private fun capacityRateLabelColor(): Int {
+            return if (palette.isLight) Color.rgb(30, 27, 22) else palette.mutedText
+        }
+
+        private fun capacityRateLegendColor(): Int {
+            return if (palette.isLight) Color.rgb(22, 20, 16) else palette.text
+        }
+
+        private fun capacityRateQuickColor(): Int {
+            return if (palette.isLight) Color.rgb(0, 175, 78) else palette.rightAxisPositive
+        }
+
+        private fun capacityRateFullColor(): Int {
+            return if (palette.isLight) Color.rgb(92, 50, 18) else palette.estimateLabel
+        }
+
+        private fun capacityRateFitColor(): Int {
+            return if (palette.isLight) {
+                Color.rgb(30, 30, 30)
+            } else {
+                Color.argb(190, Color.red(palette.text), Color.green(palette.text), Color.blue(palette.text))
+            }
+        }
+
+        private fun chooseAxisMax(value: Double): Double {
+            return chooseNiceStep(value / 4.0) * 4.0
+        }
+
+        private fun chooseNiceStep(rawStep: Double): Double {
+            if (rawStep <= 0.0) return 1.0
+            val exponent = floor(log10(rawStep))
+            val magnitude = 10.0.pow(exponent)
+            val fraction = rawStep / magnitude
+            val niceFraction = when {
+                fraction <= 1.0 -> 1.0
+                fraction <= 2.0 -> 2.0
+                fraction <= 5.0 -> 5.0
+                else -> 10.0
+            }
+            return niceFraction * magnitude
+        }
+
+        private fun fitCurve(items: List<CapacityRatePoint>): CapacityFit? {
+            if (items.size < 2) return null
+            return if (items.size >= 3) {
+                quadraticFit(items) ?: linearFit(items)
+            } else {
+                linearFit(items)
+            }
+        }
+
+        private fun linearFit(items: List<CapacityRatePoint>): CapacityFit? {
+            val n = items.size.toDouble()
+            val sumX = items.sumOf { it.cRate }
+            val sumY = items.sumOf { it.capacityMah }
+            val sumXX = items.sumOf { it.cRate * it.cRate }
+            val sumXY = items.sumOf { it.cRate * it.capacityMah }
+            val denominator = n * sumXX - sumX * sumX
+            if (abs(denominator) < 1e-9) return null
+            val b = (n * sumXY - sumX * sumY) / denominator
+            val a = (sumY - b * sumX) / n
+            return CapacityFit(a, b, 0.0)
+        }
+
+        private fun quadraticFit(items: List<CapacityRatePoint>): CapacityFit? {
+            val n = items.size.toDouble()
+            val sx = items.sumOf { it.cRate }
+            val sx2 = items.sumOf { it.cRate.pow(2.0) }
+            val sx3 = items.sumOf { it.cRate.pow(3.0) }
+            val sx4 = items.sumOf { it.cRate.pow(4.0) }
+            val sy = items.sumOf { it.capacityMah }
+            val sxy = items.sumOf { it.cRate * it.capacityMah }
+            val sx2y = items.sumOf { it.cRate.pow(2.0) * it.capacityMah }
+
+            val determinant = determinant3(
+                n, sx, sx2,
+                sx, sx2, sx3,
+                sx2, sx3, sx4
+            )
+            if (abs(determinant) < 1e-9) return null
+
+            val a = determinant3(
+                sy, sx, sx2,
+                sxy, sx2, sx3,
+                sx2y, sx3, sx4
+            ) / determinant
+            val b = determinant3(
+                n, sy, sx2,
+                sx, sxy, sx3,
+                sx2, sx2y, sx4
+            ) / determinant
+            val c = determinant3(
+                n, sx, sy,
+                sx, sx2, sxy,
+                sx2, sx3, sx2y
+            ) / determinant
+            return CapacityFit(a, b, c)
+        }
+
+        private fun determinant3(
+            a11: Double, a12: Double, a13: Double,
+            a21: Double, a22: Double, a23: Double,
+            a31: Double, a32: Double, a33: Double
+        ): Double {
+            return a11 * (a22 * a33 - a23 * a32) -
+                a12 * (a21 * a33 - a23 * a31) +
+                a13 * (a21 * a32 - a22 * a31)
+        }
+
     }
 
     private fun removeCapacityEventDetailsPopup() {

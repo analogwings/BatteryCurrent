@@ -101,11 +101,15 @@ object FullDischargeTest {
     }
 
     fun latestResult(context: Context): Result? {
+        return allResults(context).lastOrNull()
+    }
+
+    fun allResults(context: Context): List<Result> {
         val file = File(context.filesDir, FILE_NAME)
-        if (!file.exists() || file.length() == 0L) return null
+        if (!file.exists() || file.length() == 0L) return emptyList()
         return try {
             val lines = file.readLines().filter { it.isNotBlank() }
-            if (lines.size < 2) return null
+            if (lines.size < 2) return emptyList()
             val headers = lines.first().split(",").map { it.trim() }
             val startIndex = headers.indexOf("Time_date_start")
             val endIndex = headers.indexOf("Time_date_end")
@@ -116,9 +120,8 @@ object FullDischargeTest {
             val tempIndex = headers.indexOf("AvgTemp_C")
             val voltageIndex = headers.indexOf("AvgVoltage_V")
             val currentIndex = headers.indexOf("AvgCurrent_mA")
-            if (startIndex < 0 || capacityIndex < 0) return null
-            lines.asReversed()
-                .dropLast(1)
+            if (startIndex < 0 || capacityIndex < 0) return emptyList()
+            lines.drop(1)
                 .mapNotNull { line ->
                     val parts = line.split(",")
                     Result(
@@ -131,9 +134,9 @@ object FullDischargeTest {
                         avgCurrentMa = parts.getOrNull(currentIndex)?.trim()?.toDoubleOrNull()
                     )
                 }
-                .firstOrNull()
+                .filter { it.capacityEstimateMah > 0 }
         } catch (_: Exception) {
-            null
+            emptyList()
         }
     }
 
