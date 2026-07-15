@@ -79,6 +79,7 @@ class BatteryCurrentService : Service() {
         private const val CALIBRATION_DOT_BLINK_MS = 1000L
         private const val GRAPH_BLINK_UPDATE_MS = 1000L
         private const val FOREGROUND_INDICATOR_UPDATE_MS = 1000L
+        private const val DAY_MS = 24L * 60L * 60L * 1000L
         private const val RIGHT_AXIS_BATTERY = "battery"
         private const val RIGHT_AXIS_TEMPERATURE = "temperature"
         private const val RIGHT_AXIS_VOLTAGE = "voltage"
@@ -620,6 +621,11 @@ class BatteryCurrentService : Service() {
         val cRate: Double,
         val capacityMah: Double,
         val source: CapacityRateSource
+    )
+
+    private data class CapacityTimePoint(
+        val timestampMs: Long,
+        val capacityMah: Double
     )
 
     private enum class CapacityRateSource {
@@ -2025,6 +2031,18 @@ class BatteryCurrentService : Service() {
             }
         }
 
+        val trendPoints = capacityEstimator.capacityEstimateHistory().map { summary ->
+            CapacityTimePoint(summary.timestampMs, summary.averageCapacityMah.toDouble())
+        }
+        popup.addView(CapacityTimeTrendView(this, palette).apply {
+            setPoints(trendPoints)
+        }, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            320
+        ).apply {
+            setMargins(0, 10, 0, 0)
+        })
+
         capacityHistoryPopupView = popup
         val insertIndex = (graphContainer.childCount - 1).coerceAtLeast(0)
         graphContainer.addView(popup, insertIndex, LinearLayout.LayoutParams(
@@ -2595,6 +2613,212 @@ class BatteryCurrentService : Service() {
             (view.parent as? LinearLayout)?.removeView(view)
         }
         capacityStatsPopupView = null
+    }
+
+    private inner class CapacityTimeTrendView(
+        context: Context,
+        private val palette: GraphPalette
+    ) : View(context) {
+        private val points = ArrayList<CapacityTimePoint>()
+        private val plotBounds = RectF()
+        private val dateFormat = SimpleDateFormat("MMM d", Locale.US)
+        private val axisPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = trendAxisColor()
+            style = Paint.Style.STROKE
+            strokeWidth = 2f
+        }
+        private val gridPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = trendGridColor()
+            strokeWidth = if (palette.isLight) 1.5f else 1f
+        }
+        private val plotBackgroundPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = if (palette.isLight) Color.rgb(238, 229, 208) else Color.argb(22, 255, 255, 255)
+            style = Paint.Style.FILL
+        }
+        private val pointPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = trendPointColor()
+            style = Paint.Style.FILL
+        }
+        private val pointStrokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = trendAxisColor()
+            style = Paint.Style.STROKE
+            strokeWidth = if (palette.isLight) 1.2f else 0f
+        }
+        private val fitPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = trendFitColor()
+            style = Paint.Style.STROKE
+            strokeWidth = 2.8f
+        }
+        private val labelPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = trendLabelColor()
+            textSize = 18f
+            typeface = Typeface.MONOSPACE
+        }
+        private val titlePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = palette.text
+            textSize = 20f
+            typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
+        }
+
+        fun setPoints(items: List<CapacityTimePoint>) {
+            points.clear()
+            points.addAll(items.sortedBy { it.timestampMs })
+            invalidate()
+        }
+
+        override fun onDraw(canvas: Canvas) {
+            super.onDraw(canvas)
+            plotBounds.set(86f, 54f, width - 34f, height - 46f)
+            drawFrame(canvas)
+
+            if (points.isEmpty()) {
+                labelPaint.textAlign = Paint.Align.LEFT
+                labelPaint.color = trendLabelColor()
+                canvas.drawText("No included daily estimates yet", plotBounds.left + 14f, plotBounds.centerY(), labelPaint)
+                return
+            }
+
+            val startMs = points.minOf { it.timestampMs }
+            val latestPointMs = points.maxOf { it.timestampMs }
+            val endMs = maxOf(System.currentTimeMillis(), latestPointMs, startMs + DAY_MS)
+            val yRange = capacityAxisRange(points.map { it.capacityMah })
+            drawTicks(canvas, startMs, endMs, yRange.first, yRange.second)
+            drawFitLine(canvas, startMs, endMs, yRange.first, yRange.second)
+            drawPoints(canvas, startMs, endMs, yRange.first, yRange.second)
+            drawLegend(canvas)
+        }
+
+        private fun drawFrame(canvas: Canvas) {
+            canvas.drawRoundRect(plotBounds, 7f, 7f, plotBackgroundPaint)
+            canvas.drawRect(plotBounds, axisPaint)
+            titlePaint.textAlign = Paint.Align.LEFT
+            canvas.drawText("Capacity trend over time", plotBounds.left, 24f, titlePaint)
+        }
+
+        private fun drawTicks(canvas: Canvas, startMs: Long, endMs: Long, yMin: Double, yMax: Double) {
+            labelPaint.color = trendLabelColor()
+            val xTickCount = 4
+            labelPaint.textAlign = Paint.Align.CENTER
+            for (i in 0..xTickCount) {
+                val timestamp = startMs + ((endMs - startMs).toDouble() * i / xTickCount).toLong()
+                val x = xForTime(timestamp, startMs, endMs)
+                canvas.drawLine(x, plotBounds.top, x, plotBounds.bottom, gridPaint)
+                canvas.drawLine(x, plotBounds.bottom, x, plotBounds.bottom + 7f, axisPaint)
+                canvas.drawText(dateFormat.format(Date(timestamp)), x, plotBounds.bottom + 27f, labelPaint)
+            }
+
+            val yStep = chooseNiceStep((yMax - yMin).coerceAtLeast(1.0) / 4.0)
+            labelPaint.textAlign = Paint.Align.RIGHT
+            var yTick = ceil(yMin / yStep) * yStep
+            while (yTick <= yMax + yStep * 0.5) {
+                val y = yForCapacity(yTick, yMin, yMax)
+                canvas.drawLine(plotBounds.left, y, plotBounds.right, y, gridPaint)
+                canvas.drawLine(plotBounds.left - 7f, y, plotBounds.left, y, axisPaint)
+                canvas.drawText(yTick.roundToInt().toString(), plotBounds.left - 12f, y + 6f, labelPaint)
+                yTick += yStep
+            }
+
+            labelPaint.textAlign = Paint.Align.CENTER
+            canvas.save()
+            canvas.rotate(-90f, 24f, plotBounds.centerY())
+            canvas.drawText("mAh", 24f, plotBounds.centerY(), labelPaint)
+            canvas.restore()
+        }
+
+        private fun drawPoints(canvas: Canvas, startMs: Long, endMs: Long, yMin: Double, yMax: Double) {
+            points.forEach { point ->
+                val x = xForTime(point.timestampMs, startMs, endMs)
+                val y = yForCapacity(point.capacityMah, yMin, yMax)
+                canvas.drawCircle(x, y, 4.8f, pointPaint)
+                if (palette.isLight) canvas.drawCircle(x, y, 4.8f, pointStrokePaint)
+            }
+        }
+
+        private fun drawFitLine(canvas: Canvas, startMs: Long, endMs: Long, yMin: Double, yMax: Double) {
+            val fit = linearFit() ?: return
+            val path = Path()
+            val segments = 48
+            for (i in 0..segments) {
+                val timestamp = startMs + ((endMs - startMs).toDouble() * i / segments).toLong()
+                val days = (timestamp - startMs).toDouble() / DAY_MS.toDouble()
+                val x = xForTime(timestamp, startMs, endMs)
+                val y = yForCapacity(fit.first + fit.second * days, yMin, yMax)
+                if (i == 0) path.moveTo(x, y) else path.lineTo(x, y)
+            }
+            canvas.drawPath(path, fitPaint)
+        }
+
+        private fun drawLegend(canvas: Canvas) {
+            labelPaint.textAlign = Paint.Align.LEFT
+            labelPaint.color = trendLegendColor()
+            val y = 46f
+            var x = plotBounds.left
+            canvas.drawCircle(x + 7f, y - 6f, 4.8f, pointPaint)
+            if (palette.isLight) canvas.drawCircle(x + 7f, y - 6f, 4.8f, pointStrokePaint)
+            canvas.drawText("daily avg", x + 20f, y, labelPaint)
+            x += 148f
+            canvas.drawLine(x, y - 6f, x + 30f, y - 6f, fitPaint)
+            canvas.drawText("fit", x + 40f, y, labelPaint)
+        }
+
+        private fun linearFit(): Pair<Double, Double>? {
+            if (points.size < 2) return null
+            val startMs = points.minOf { it.timestampMs }
+            val n = points.size.toDouble()
+            val xs = points.map { (it.timestampMs - startMs).toDouble() / DAY_MS.toDouble() }
+            val sumX = xs.sum()
+            val sumY = points.sumOf { it.capacityMah }
+            val sumXX = xs.sumOf { it * it }
+            val sumXY = points.zip(xs).sumOf { (point, x) -> point.capacityMah * x }
+            val denominator = n * sumXX - sumX * sumX
+            if (abs(denominator) < 1e-9) return null
+            val slope = (n * sumXY - sumX * sumY) / denominator
+            val intercept = (sumY - slope * sumX) / n
+            return intercept to slope
+        }
+
+        private fun capacityAxisRange(values: List<Double>): Pair<Double, Double> {
+            val minValue = values.minOrNull() ?: 0.0
+            val maxValue = values.maxOrNull() ?: 1.0
+            val range = (maxValue - minValue).coerceAtLeast(200.0)
+            val paddedMin = (minValue - range * 0.15).coerceAtLeast(0.0)
+            val paddedMax = maxValue + range * 0.15
+            val step = chooseNiceStep((paddedMax - paddedMin) / 4.0)
+            return floor(paddedMin / step) * step to ceil(paddedMax / step) * step
+        }
+
+        private fun xForTime(timestampMs: Long, startMs: Long, endMs: Long): Float {
+            val fraction = ((timestampMs - startMs).toDouble() / (endMs - startMs).coerceAtLeast(1L).toDouble())
+                .coerceIn(0.0, 1.0)
+                .toFloat()
+            return plotBounds.left + fraction * plotBounds.width()
+        }
+
+        private fun yForCapacity(capacityMah: Double, yMin: Double, yMax: Double): Float {
+            val fraction = ((capacityMah.coerceIn(yMin, yMax) - yMin) / (yMax - yMin).coerceAtLeast(1.0)).toFloat()
+            return plotBounds.bottom - fraction * plotBounds.height()
+        }
+
+        private fun chooseNiceStep(rawStep: Double): Double {
+            if (rawStep <= 0.0) return 1.0
+            val exponent = floor(log10(rawStep))
+            val magnitude = 10.0.pow(exponent)
+            val fraction = rawStep / magnitude
+            val niceFraction = when {
+                fraction <= 1.0 -> 1.0
+                fraction <= 2.0 -> 2.0
+                fraction <= 5.0 -> 5.0
+                else -> 10.0
+            }
+            return niceFraction * magnitude
+        }
+
+        private fun trendAxisColor(): Int = if (palette.isLight) Color.rgb(28, 24, 18) else palette.axis
+        private fun trendGridColor(): Int = if (palette.isLight) Color.argb(150, 28, 24, 18) else palette.grid
+        private fun trendLabelColor(): Int = if (palette.isLight) Color.rgb(30, 27, 22) else palette.mutedText
+        private fun trendLegendColor(): Int = if (palette.isLight) Color.rgb(22, 20, 16) else palette.text
+        private fun trendPointColor(): Int = if (palette.isLight) Color.rgb(0, 145, 70) else palette.cool
+        private fun trendFitColor(): Int = if (palette.isLight) Color.rgb(96, 55, 18) else palette.estimateLabel
     }
 
     private inner class CapacityRateCurveView(

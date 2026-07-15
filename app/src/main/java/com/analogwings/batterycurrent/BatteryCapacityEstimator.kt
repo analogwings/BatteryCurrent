@@ -221,6 +221,18 @@ class BatteryCapacityEstimator(private val context: Context) {
         return rows.takeLast(limit.coerceAtLeast(1))
     }
 
+    fun capacityEstimateHistory(): List<DailyEstimateSummary> {
+        return readReadings()
+            .filter { it.averageCapacityMah > 0 && it.sampleCount > 0 }
+            .map { reading ->
+                DailyEstimateSummary(
+                    timestampMs = reading.timestampMs,
+                    averageCapacityMah = reading.averageCapacityMah,
+                    sampleCount = reading.sampleCount
+                )
+            }
+    }
+
     fun estimateNearTimestamp(timestampMs: Long, windowDays: Int = 3): Int? {
         val readings = readReadings()
         if (readings.isEmpty()) return null
