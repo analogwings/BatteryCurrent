@@ -977,7 +977,7 @@ class BatteryCurrentService : Service() {
     }
 
     private fun formatElapsedTime(now: Long): String {
-        val elapsedSeconds = ((now - sessionStartMs).coerceAtLeast(0L)) / 1000L
+        val elapsedSeconds = ((now - graphDisplayZeroTimeMs()).coerceAtLeast(0L)) / 1000L
         if (elapsedSeconds < 60) {
             return "${elapsedSeconds}s"
         }
@@ -994,7 +994,7 @@ class BatteryCurrentService : Service() {
     }
 
     private fun formatElapsedClock(now: Long): String {
-        val rawElapsedSeconds = ((now - sessionStartMs).coerceAtLeast(0L)) / 1000L
+        val rawElapsedSeconds = ((now - graphDisplayZeroTimeMs()).coerceAtLeast(0L)) / 1000L
         val elapsedSeconds = ((rawElapsedSeconds + 5L) / 10L) * 10L
         val hours = elapsedSeconds / 3600
         val minutes = (elapsedSeconds % 3600) / 60
@@ -1090,7 +1090,7 @@ class BatteryCurrentService : Service() {
 
     private fun buildGraphLiveDisplayText(now: Long): String {
         return listOf(
-            formatGraphElapsedClock(now),
+            formatElapsedClock(now),
             formatCurrentText(),
             formatTemperatureText(),
             formatVoltageText(),
@@ -1110,16 +1110,6 @@ class BatteryCurrentService : Service() {
         } catch (_: Exception) {
             // Sound is helpful but not essential; keep calibration running if audio is unavailable.
         }
-    }
-
-    private fun formatGraphElapsedClock(now: Long): String {
-        val zeroMs = graphDisplayZeroTimeMs()
-        val rawElapsedSeconds = ((now - zeroMs).coerceAtLeast(0L)) / 1000L
-        val elapsedSeconds = ((rawElapsedSeconds + 5L) / 10L) * 10L
-        val hours = elapsedSeconds / 3600
-        val minutes = (elapsedSeconds % 3600) / 60
-        val seconds = elapsedSeconds % 60
-        return String.format(Locale.US, "%d:%02d:%02d", hours, minutes, seconds)
     }
 
     private fun formatSelectedGraphEnergy(): String {
