@@ -80,6 +80,8 @@ class BatteryCurrentService : Service() {
         private const val GRAPH_BLINK_UPDATE_MS = 1000L
         private const val FOREGROUND_INDICATOR_UPDATE_MS = 1000L
         private const val DAY_MS = 24L * 60L * 60L * 1000L
+        private const val CAPACITY_TREND_VIEWPORT_MS = 90L * DAY_MS
+        private const val MAX_CAPACITY_RATE_GRAPH_POINTS = 100
         private const val RIGHT_AXIS_BATTERY = "battery"
         private const val RIGHT_AXIS_TEMPERATURE = "temperature"
         private const val RIGHT_AXIS_VOLTAGE = "voltage"
@@ -618,6 +620,7 @@ class BatteryCurrentService : Service() {
     )
 
     private data class CapacityRatePoint(
+        val timestampMs: Long,
         val cRate: Double,
         val capacityMah: Double,
         val source: CapacityRateSource
@@ -1739,7 +1742,7 @@ class BatteryCurrentService : Service() {
                     if (ProFeatureGate.isProEnabled(this@BatteryCurrentService)) {
                         val result = FullDischargeTest.latestResult(this@BatteryCurrentService)
                         if (result != null) {
-                            showCalibrationResultPopup(result)
+                            showCapacityEstimateDetailsPopup(result)
                         } else {
                             showCapacityHistoryPopup()
                         }
@@ -1791,10 +1794,11 @@ class BatteryCurrentService : Service() {
         val warningView = warningRow?.getChildAt(0) as? TextView
 
         val estimateMah = capacityDisplayState.estimateMah
+        val hasCapacityDetails = estimateMah != null || FullDischargeTest.latestResult(this) != null
         estimateView?.text = buildCapacityEstimateText(estimateMah)
         estimateView?.visibility = View.VISIBLE
-        estimateView?.isEnabled = estimateMah != null
-        if (estimateMah == null) {
+        estimateView?.isEnabled = hasCapacityDetails
+        if (!hasCapacityDetails) {
             removeCapacityHistoryPopup()
         }
 
@@ -1844,18 +1848,19 @@ class BatteryCurrentService : Service() {
         val fdResult = FullDischargeTest.latestResult(this)
         if (fdResult != null) {
             val label = "Calibration battery capacity [${fdResult.startTimestampText}]:\n"
-            val rawValue = String.format(Locale.US, "%dmAh", fdResult.capacityEstimateMah)
-            val adjustedValue = adjustedFullDischargeCapacity(fdResult)
-            val adjValue = String.format(Locale.US, "%dmAh%s", adjustedValue, adjustedCapacityDegradationText(adjustedValue))
-            val secondLine = "Raw: $rawValue   Adj: $adjValue"
+            val standardizedValue = standardizedFullDischargeCapacity(fdResult)
+            val usageValue = adjustedFullDischargeCapacity(fdResult)
+            val stdValue = String.format(Locale.US, "%dmAh", standardizedValue)
+            val usageText = String.format(Locale.US, "%dmAh", usageValue)
+            val secondLine = "Std: $stdValue, Usage based: $usageText"
             val text = label + secondLine
-            val rawValueStart = text.indexOf(rawValue)
-            val adjValueStart = text.indexOf(adjValue)
+            val stdValueStart = text.indexOf(stdValue)
+            val usageValueStart = text.indexOf(usageText)
             return CapacityLine(
                 text = text,
-                labelRanges = listOf(0 until label.length, label.length until rawValueStart, (rawValueStart + rawValue.length) until adjValueStart),
-                valueRanges = listOf(rawValueStart until rawValueStart + rawValue.length, adjValueStart until adjValueStart + adjValue.length),
-                valueColor = capacityEstimateColor(adjustedValue)
+                labelRanges = listOf(0 until label.length, label.length until stdValueStart, (stdValueStart + stdValue.length) until usageValueStart),
+                valueRanges = listOf(stdValueStart until stdValueStart + stdValue.length, usageValueStart until usageValueStart + usageText.length),
+                valueColor = capacityEstimateColor(usageValue)
             )
         }
 
@@ -1886,6 +1891,32 @@ class BatteryCurrentService : Service() {
         }
         val ratio = (recentEstimate.toDouble() / anchorEstimate).coerceIn(0.95, 1.05)
         return (fdResult.capacityEstimateMah * ratio).roundToInt()
+    }
+
+    private fun standardizedFullDischargeCapacity(fdResult: FullDischargeTest.Result): Int {
+        val referenceCapacity = BatteryCapacityReference.originalCapacityMah(this)
+            ?: fdResult.capacityEstimateMah
+        val referenceCurrentMa = (referenceCapacity * 0.2).coerceAtLeast(1.0)
+        val currentFactor = standardizedCurrentFactor(fdResult.avgCurrentMa, referenceCurrentMa)
+        val temperatureFactor = standardizedTemperatureFactor(fdResult.avgTempC)
+        return (fdResult.capacityEstimateMah * currentFactor * temperatureFactor)
+            .roundToInt()
+            .coerceAtLeast(1)
+    }
+
+    private fun standardizedCurrentFactor(avgCurrentMa: Double?, referenceCurrentMa: Double): Double {
+        val measuredCurrent = avgCurrentMa?.takeIf { it > 0.0 } ?: return 1.0
+        val peukertK = latestPeukertConstant() ?: 1.0
+        return (measuredCurrent / referenceCurrentMa)
+            .pow((peukertK - 1.0).coerceIn(0.0, 0.6))
+            .coerceIn(0.85, 1.15)
+    }
+
+    private fun standardizedTemperatureFactor(avgTempC: Double?): Double {
+        val measuredTemp = avgTempC ?: return 1.0
+        val measuredCapacityFactor = 1.0 + (measuredTemp - 20.0) * 0.006
+        return (1.0 / measuredCapacityFactor.coerceIn(0.75, 1.20))
+            .coerceIn(0.85, 1.15)
     }
 
     private fun parseCapacityDate(text: String): Long? {
@@ -2425,6 +2456,74 @@ class BatteryCurrentService : Service() {
         })
     }
 
+    private fun showCapacityEstimateDetailsPopup(result: FullDischargeTest.Result) {
+        val graphContainer = graphOverlayView ?: return
+        removeCalibrationResultPopup()
+
+        val palette = graphPalette()
+        val popup = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = graphPopupBackground(palette, cornerRadius = 12f)
+            setPadding(18, 14, 18, 14)
+            elevation = 34f
+
+            addView(LinearLayout(this@BatteryCurrentService).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                addView(TextView(this@BatteryCurrentService).apply {
+                    text = "Capacity details"
+                    textSize = 13f
+                    setTypeface(typeface, Typeface.BOLD)
+                    setTextColor(palette.text)
+                }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+                addView(Button(this@BatteryCurrentService).apply {
+                    styleCloseButton(this, palette)
+                    text = "x"
+                    setOnClickListener { removeCalibrationResultPopup() }
+                })
+            })
+
+            addView(TextView(this@BatteryCurrentService).apply {
+                text = capacityEstimateDetailsText(result)
+                textSize = 12f
+                setTextColor(palette.estimateLabel)
+                setPadding(0, 8, 0, 0)
+            })
+        }
+
+        calibrationResultPopupView = popup
+        val insertIndex = (graphContainer.childCount - 1).coerceAtLeast(0)
+        graphContainer.addView(popup, insertIndex, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT
+        ).apply {
+            setMargins(0, 10, 0, 4)
+        })
+    }
+
+    private fun capacityEstimateDetailsText(result: FullDischargeTest.Result): String {
+        val standardized = standardizedFullDischargeCapacity(result)
+        val usageBased = adjustedFullDischargeCapacity(result)
+        val referenceCapacity = BatteryCapacityReference.originalCapacityMah(this)
+        val referenceCurrentMa = referenceCapacity?.let { it * 0.2 }
+        val avgCRate = if (referenceCapacity != null && referenceCapacity > 0 && result.avgCurrentMa != null) {
+            result.avgCurrentMa / referenceCapacity
+        } else {
+            null
+        }
+        val lines = ArrayList<String>()
+        lines.add(String.format(Locale.US, "Std capacity: %dmAh", standardized))
+        lines.add("Std target: 0.2C, 20\u00B0C, 2.75V cutoff")
+        lines.add(String.format(Locale.US, "Usage based: %dmAh", usageBased))
+        lines.add(String.format(Locale.US, "Raw calibration: %dmAh", result.capacityEstimateMah))
+        lines.add("Average current: ${result.avgCurrentMa?.let { String.format(Locale.US, "%.0fmA", it) } ?: "n/a"}${avgCRate?.let { String.format(Locale.US, " (%.2fC)", it) } ?: ""}")
+        referenceCurrentMa?.let { lines.add(String.format(Locale.US, "0.2C reference: %.0fmA", it)) }
+        lines.add("Average temp: ${result.avgTempC?.let { String.format(Locale.US, "%.1f\u00B0C", it) } ?: "n/a"}")
+        lines.add("Average voltage: ${result.avgVoltageV?.let { String.format(Locale.US, "%.3fV", it) } ?: "n/a"}")
+        lines.add("Cutoff voltage is not yet recorded separately; voltage line shows measured average.")
+        return lines.joinToString("\n")
+    }
+
     private fun calibrationResultText(result: FullDischargeTest.Result?): String {
         if (result == null) return "Calibration was saved."
         val lines = ArrayList<String>()
@@ -2541,6 +2640,7 @@ class BatteryCurrentService : Service() {
         val quickPoints = capacityEstimator.dischargeCapacityEvents().mapNotNull { event ->
             val current = event.avgCurrentMa?.takeIf { it > 0.0 } ?: return@mapNotNull null
             CapacityRatePoint(
+                timestampMs = event.endTimestampMs,
                 cRate = current / reference,
                 capacityMah = event.capacityEstimateMah.toDouble(),
                 source = CapacityRateSource.QUICK
@@ -2548,7 +2648,12 @@ class BatteryCurrentService : Service() {
         }
         val fullPoints = FullDischargeTest.allResults(this).mapNotNull { result ->
             val current = result.avgCurrentMa?.takeIf { it > 0.0 } ?: return@mapNotNull null
+            val timestampMs = result.endTimestampText
+                ?.let { parseCapacityDate(it) }
+                ?: parseCapacityDate(result.startTimestampText)
+                ?: return@mapNotNull null
             CapacityRatePoint(
+                timestampMs = timestampMs,
                 cRate = current / reference,
                 capacityMah = result.capacityEstimateMah.toDouble(),
                 source = CapacityRateSource.FULL
@@ -2556,6 +2661,8 @@ class BatteryCurrentService : Service() {
         }
         return (quickPoints + fullPoints)
             .filter { it.cRate > 0.0 && it.capacityMah > 0.0 }
+            .sortedByDescending { it.timestampMs }
+            .take(MAX_CAPACITY_RATE_GRAPH_POINTS)
             .sortedBy { it.cRate }
     }
 
@@ -2611,7 +2718,12 @@ class BatteryCurrentService : Service() {
     ) : View(context) {
         private val points = ArrayList<CapacityTimePoint>()
         private val plotBounds = RectF()
+        private val resetButtonBounds = RectF()
         private val dateFormat = SimpleDateFormat("MMM d", Locale.US)
+        private var manualViewportStartMs: Long? = null
+        private var dragStartX = 0f
+        private var dragStartViewportMs = 0L
+        private var isDraggingViewport = false
         private val axisPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = trendAxisColor()
             style = Paint.Style.STROKE
@@ -2649,10 +2761,26 @@ class BatteryCurrentService : Service() {
             textSize = 20f
             typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
         }
+        private val resetButtonPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = if (palette.isLight) Color.rgb(232, 236, 224) else Color.argb(220, 52, 58, 66)
+            style = Paint.Style.FILL
+        }
+        private val resetButtonStrokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = trendAxisColor()
+            style = Paint.Style.STROKE
+            strokeWidth = 1.4f
+        }
+        private val resetButtonTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = trendLabelColor()
+            textSize = 15f
+            typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
+            textAlign = Paint.Align.CENTER
+        }
 
         fun setPoints(items: List<CapacityTimePoint>) {
             points.clear()
             points.addAll(items.sortedBy { it.timestampMs })
+            manualViewportStartMs = manualViewportStartMs?.let { clampViewportStart(it) }
             invalidate()
         }
 
@@ -2668,14 +2796,15 @@ class BatteryCurrentService : Service() {
                 return
             }
 
-            val startMs = points.minOf { it.timestampMs }
-            val latestPointMs = points.maxOf { it.timestampMs }
-            val endMs = maxOf(System.currentTimeMillis(), latestPointMs, startMs + DAY_MS)
-            val yRange = capacityAxisRange(points.map { it.capacityMah })
+            val (startMs, endMs) = visibleTimeRange()
+            val visiblePoints = points.filter { it.timestampMs in startMs..endMs }
+            val ySource = visiblePoints.takeIf { it.isNotEmpty() } ?: points
+            val yRange = capacityAxisRange(ySource.map { it.capacityMah })
             drawTicks(canvas, startMs, endMs, yRange.first, yRange.second)
-            drawFitLine(canvas, startMs, endMs, yRange.first, yRange.second)
-            drawPoints(canvas, startMs, endMs, yRange.first, yRange.second)
+            drawFitLine(canvas, visiblePoints, startMs, endMs, yRange.first, yRange.second)
+            drawPoints(canvas, visiblePoints, startMs, endMs, yRange.first, yRange.second)
             drawLegend(canvas)
+            drawResetButton(canvas)
         }
 
         private fun drawFrame(canvas: Canvas) {
@@ -2715,8 +2844,15 @@ class BatteryCurrentService : Service() {
             canvas.restore()
         }
 
-        private fun drawPoints(canvas: Canvas, startMs: Long, endMs: Long, yMin: Double, yMax: Double) {
-            points.forEach { point ->
+        private fun drawPoints(
+            canvas: Canvas,
+            items: List<CapacityTimePoint>,
+            startMs: Long,
+            endMs: Long,
+            yMin: Double,
+            yMax: Double
+        ) {
+            items.forEach { point ->
                 val x = xForTime(point.timestampMs, startMs, endMs)
                 val y = yForCapacity(point.capacityMah, yMin, yMax)
                 canvas.drawCircle(x, y, 4.8f, pointPaint)
@@ -2724,8 +2860,15 @@ class BatteryCurrentService : Service() {
             }
         }
 
-        private fun drawFitLine(canvas: Canvas, startMs: Long, endMs: Long, yMin: Double, yMax: Double) {
-            val fit = linearFit() ?: return
+        private fun drawFitLine(
+            canvas: Canvas,
+            items: List<CapacityTimePoint>,
+            startMs: Long,
+            endMs: Long,
+            yMin: Double,
+            yMax: Double
+        ) {
+            val fit = linearFit(items, startMs) ?: return
             val path = Path()
             val segments = 48
             for (i in 0..segments) {
@@ -2751,20 +2894,93 @@ class BatteryCurrentService : Service() {
             canvas.drawText("fit", x + 40f, y, labelPaint)
         }
 
-        private fun linearFit(): Pair<Double, Double>? {
-            if (points.size < 2) return null
-            val startMs = points.minOf { it.timestampMs }
-            val n = points.size.toDouble()
-            val xs = points.map { (it.timestampMs - startMs).toDouble() / DAY_MS.toDouble() }
+        private fun drawResetButton(canvas: Canvas) {
+            if (manualViewportStartMs == null) {
+                resetButtonBounds.setEmpty()
+                return
+            }
+
+            resetButtonBounds.set(plotBounds.right - 82f, plotBounds.top + 8f, plotBounds.right - 10f, plotBounds.top + 38f)
+            canvas.drawRoundRect(resetButtonBounds, 8f, 8f, resetButtonPaint)
+            canvas.drawRoundRect(resetButtonBounds, 8f, 8f, resetButtonStrokePaint)
+            canvas.drawText("Reset", resetButtonBounds.centerX(), resetButtonBounds.centerY() + 5f, resetButtonTextPaint)
+        }
+
+        private fun linearFit(items: List<CapacityTimePoint>, startMs: Long): Pair<Double, Double>? {
+            if (items.size < 2) return null
+            val n = items.size.toDouble()
+            val xs = items.map { (it.timestampMs - startMs).toDouble() / DAY_MS.toDouble() }
             val sumX = xs.sum()
-            val sumY = points.sumOf { it.capacityMah }
+            val sumY = items.sumOf { it.capacityMah }
             val sumXX = xs.sumOf { it * it }
-            val sumXY = points.zip(xs).sumOf { (point, x) -> point.capacityMah * x }
+            val sumXY = items.zip(xs).sumOf { (point, x) -> point.capacityMah * x }
             val denominator = n * sumXX - sumX * sumX
             if (abs(denominator) < 1e-9) return null
             val slope = (n * sumXY - sumX * sumY) / denominator
             val intercept = (sumY - slope * sumX) / n
             return intercept to slope
+        }
+
+        private fun visibleTimeRange(): Pair<Long, Long> {
+            val minMs = points.minOf { it.timestampMs }
+            val maxMs = points.maxOf { it.timestampMs }.coerceAtLeast(minMs + DAY_MS)
+            val totalSpanMs = (maxMs - minMs).coerceAtLeast(DAY_MS)
+            val durationMs = CAPACITY_TREND_VIEWPORT_MS.coerceAtMost(totalSpanMs).coerceAtLeast(DAY_MS)
+            val maxStartMs = (maxMs - durationMs).coerceAtLeast(minMs)
+            val defaultStartMs = maxStartMs
+            val startMs = (manualViewportStartMs ?: defaultStartMs).coerceIn(minMs, maxStartMs)
+            return startMs to (startMs + durationMs).coerceAtMost(maxMs)
+        }
+
+        private fun clampViewportStart(startMs: Long): Long {
+            if (points.isEmpty()) return startMs
+            val minMs = points.minOf { it.timestampMs }
+            val maxMs = points.maxOf { it.timestampMs }.coerceAtLeast(minMs + DAY_MS)
+            val totalSpanMs = (maxMs - minMs).coerceAtLeast(DAY_MS)
+            val durationMs = CAPACITY_TREND_VIEWPORT_MS.coerceAtMost(totalSpanMs).coerceAtLeast(DAY_MS)
+            val maxStartMs = (maxMs - durationMs).coerceAtLeast(minMs)
+            return startMs.coerceIn(minMs, maxStartMs)
+        }
+
+        override fun onTouchEvent(event: MotionEvent): Boolean {
+            if (points.isEmpty()) return super.onTouchEvent(event)
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    if (manualViewportStartMs != null && resetButtonBounds.contains(event.x, event.y)) {
+                        manualViewportStartMs = null
+                        invalidate()
+                        performClick()
+                        return true
+                    }
+                    parent?.requestDisallowInterceptTouchEvent(true)
+                    dragStartX = event.x
+                    dragStartViewportMs = visibleTimeRange().first
+                    isDraggingViewport = true
+                    return true
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    if (!isDraggingViewport || plotBounds.width() <= 0f) return true
+                    val (startMs, endMs) = visibleTimeRange()
+                    val durationMs = (endMs - startMs).coerceAtLeast(DAY_MS)
+                    val deltaMs = (-(event.x - dragStartX).toDouble() / plotBounds.width().toDouble() * durationMs).toLong()
+                    manualViewportStartMs = clampViewportStart(dragStartViewportMs + deltaMs)
+                    invalidate()
+                    return true
+                }
+                MotionEvent.ACTION_UP,
+                MotionEvent.ACTION_CANCEL -> {
+                    parent?.requestDisallowInterceptTouchEvent(false)
+                    isDraggingViewport = false
+                    performClick()
+                    return true
+                }
+            }
+            return super.onTouchEvent(event)
+        }
+
+        override fun performClick(): Boolean {
+            super.performClick()
+            return true
         }
 
         private fun capacityAxisRange(values: List<Double>): Pair<Double, Double> {
