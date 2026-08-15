@@ -82,6 +82,8 @@ class BatteryCurrentService : Service() {
         private const val DAY_MS = 24L * 60L * 60L * 1000L
         private const val CAPACITY_TREND_VIEWPORT_MS = 90L * DAY_MS
         private const val MAX_CAPACITY_RATE_GRAPH_POINTS = 100
+        private const val CAPACITY_RATE_BIN_WIDTH_C = 0.01
+        private const val CAPACITY_TEMP_BIN_WIDTH_C = 1.0
         private const val RIGHT_AXIS_BATTERY = "battery"
         private const val RIGHT_AXIS_TEMPERATURE = "temperature"
         private const val RIGHT_AXIS_VOLTAGE = "voltage"
@@ -111,6 +113,7 @@ class BatteryCurrentService : Service() {
     private var socCurvePopupView: View? = null
     private var calibrationResultPopupView: View? = null
     private var capacityStatsPopupView: View? = null
+    private var capacityStatsGraphMode = CapacityStatsGraphMode.DISCHARGE_RATE
     private var graphMenuCollapsed = false
     private val capacityEstimator by lazy { BatteryCapacityEstimator(this) }
 
@@ -622,6 +625,7 @@ class BatteryCurrentService : Service() {
     private data class CapacityRatePoint(
         val timestampMs: Long,
         val cRate: Double,
+        val temperatureC: Double?,
         val capacityMah: Double,
         val source: CapacityRateSource
     )
@@ -634,6 +638,11 @@ class BatteryCurrentService : Service() {
     private enum class CapacityRateSource {
         QUICK,
         FULL
+    }
+
+    private enum class CapacityStatsGraphMode {
+        DISCHARGE_RATE,
+        TEMPERATURE
     }
 
     private data class CapacityFit(
@@ -2544,6 +2553,15 @@ class BatteryCurrentService : Service() {
 
         val stats = capacityEstimator.capacityStats()
         val palette = graphPalette()
+        val graphPoints = capacityRateGraphPoints(stats.referenceCapacityMah)
+        lateinit var graphView: CapacityRateCurveView
+        fun setGraphToggleText(button: Button) {
+            button.text = if (capacityStatsGraphMode == CapacityStatsGraphMode.DISCHARGE_RATE) {
+                "Temp Graph"
+            } else {
+                "Rate Graph"
+            }
+        }
         val popup = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             background = graphPopupBackground(palette, cornerRadius = 12f)
@@ -2594,6 +2612,19 @@ class BatteryCurrentService : Service() {
                         showSocCurvePopup()
                     }
                 })
+                addView(Button(this@BatteryCurrentService).apply {
+                    styleGraphMenuButton(this)
+                    setGraphToggleText(this)
+                    setOnClickListener {
+                        capacityStatsGraphMode = if (capacityStatsGraphMode == CapacityStatsGraphMode.DISCHARGE_RATE) {
+                            CapacityStatsGraphMode.TEMPERATURE
+                        } else {
+                            CapacityStatsGraphMode.DISCHARGE_RATE
+                        }
+                        graphView.setGraphMode(capacityStatsGraphMode)
+                        setGraphToggleText(this)
+                    }
+                })
             })
 
             addCapacityEventLine("Reference capacity", stats.referenceCapacityMah?.let { "${it}mAh" } ?: "n/a")
@@ -2601,12 +2632,14 @@ class BatteryCurrentService : Service() {
             addCapacityEventLine("Load sensitivity", stats.peukertK?.let { String.format(Locale.US, "k=%.2f", it) } ?: "learning")
             addCapacityEventLine("Charge eq. cycles", String.format(Locale.US, "%.2f", stats.chargeEquivalentCycles))
             addCapacityEventLine("Discharge eq. cycles", String.format(Locale.US, "%.2f", stats.dischargeEquivalentCycles))
-            addView(CapacityRateCurveView(
+            graphView = CapacityRateCurveView(
                 this@BatteryCurrentService,
                 palette
             ).apply {
-                setPoints(capacityRateGraphPoints(stats.referenceCapacityMah))
-            }, LinearLayout.LayoutParams(
+                setGraphMode(capacityStatsGraphMode)
+                setPoints(graphPoints)
+            }
+            addView(graphView, LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 480
             ).apply {
@@ -2642,6 +2675,7 @@ class BatteryCurrentService : Service() {
             CapacityRatePoint(
                 timestampMs = event.endTimestampMs,
                 cRate = current / reference,
+                temperatureC = event.avgTempC,
                 capacityMah = event.capacityEstimateMah.toDouble(),
                 source = CapacityRateSource.QUICK
             )
@@ -2655,6 +2689,7 @@ class BatteryCurrentService : Service() {
             CapacityRatePoint(
                 timestampMs = timestampMs,
                 cRate = current / reference,
+                temperatureC = result.avgTempC,
                 capacityMah = result.capacityEstimateMah.toDouble(),
                 source = CapacityRateSource.FULL
             )
@@ -2664,6 +2699,45 @@ class BatteryCurrentService : Service() {
             .sortedByDescending { it.timestampMs }
             .take(MAX_CAPACITY_RATE_GRAPH_POINTS)
             .sortedBy { it.cRate }
+    }
+
+    private fun binCapacityRatePoints(items: List<CapacityRatePoint>): List<CapacityRatePoint> {
+        return items
+            .groupBy { floor(it.cRate / CAPACITY_RATE_BIN_WIDTH_C).toInt() }
+            .map { (binIndex, binItems) ->
+                val binCenter = (binIndex + 0.5) * CAPACITY_RATE_BIN_WIDTH_C
+                CapacityRatePoint(
+                    timestampMs = binItems.maxOf { it.timestampMs },
+                    cRate = binCenter,
+                    temperatureC = binItems.mapNotNull { it.temperatureC }.takeIf { it.isNotEmpty() }?.average(),
+                    capacityMah = binItems.sumOf { it.capacityMah } / binItems.size.toDouble(),
+                    source = if (binItems.any { it.source == CapacityRateSource.FULL }) {
+                        CapacityRateSource.FULL
+                    } else {
+                        CapacityRateSource.QUICK
+                    }
+                )
+            }
+    }
+
+    private fun binCapacityTemperaturePoints(items: List<CapacityRatePoint>): List<CapacityRatePoint> {
+        return items
+            .filter { it.temperatureC != null }
+            .groupBy { floor(it.temperatureC!! / CAPACITY_TEMP_BIN_WIDTH_C).toInt() }
+            .map { (binIndex, binItems) ->
+                val binCenter = (binIndex + 0.5) * CAPACITY_TEMP_BIN_WIDTH_C
+                CapacityRatePoint(
+                    timestampMs = binItems.maxOf { it.timestampMs },
+                    cRate = binItems.sumOf { it.cRate } / binItems.size.toDouble(),
+                    temperatureC = binCenter,
+                    capacityMah = binItems.sumOf { it.capacityMah } / binItems.size.toDouble(),
+                    source = if (binItems.any { it.source == CapacityRateSource.FULL }) {
+                        CapacityRateSource.FULL
+                    } else {
+                        CapacityRateSource.QUICK
+                    }
+                )
+            }
     }
 
     private fun LinearLayout.addStatsSection(
@@ -3033,6 +3107,7 @@ class BatteryCurrentService : Service() {
     ) : View(context) {
         private val points = ArrayList<CapacityRatePoint>()
         private val plotBounds = RectF()
+        private var graphMode = CapacityStatsGraphMode.DISCHARGE_RATE
         private val axisPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = capacityRateAxisColor()
             style = Paint.Style.STROKE
@@ -3078,6 +3153,17 @@ class BatteryCurrentService : Service() {
             textSize = 22f
             typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
         }
+        private val equationPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = capacityRateLabelColor()
+            textSize = 26f
+            typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
+            textAlign = Paint.Align.RIGHT
+        }
+
+        fun setGraphMode(mode: CapacityStatsGraphMode) {
+            graphMode = mode
+            invalidate()
+        }
 
         fun setPoints(items: List<CapacityRatePoint>) {
             points.clear()
@@ -3097,13 +3183,34 @@ class BatteryCurrentService : Service() {
                 return
             }
 
-            val xMax = chooseAxisMax(points.maxOf { it.cRate }.coerceAtLeast(0.1))
-            val yMinMax = capacityAxisRange(points.map { it.capacityMah })
+            val displayPoints = displayPoints()
+            if (displayPoints.isEmpty()) {
+                labelPaint.textAlign = Paint.Align.LEFT
+                val label = if (graphMode == CapacityStatsGraphMode.TEMPERATURE) {
+                    "No discharge capacity/temperature data yet"
+                } else {
+                    "No discharge capacity/current data yet"
+                }
+                canvas.drawText(label, plotBounds.left + 20f, plotBounds.centerY(), labelPaint)
+                canvas.drawText("Discharge records will appear here.", plotBounds.left + 20f, plotBounds.centerY() + 30f, labelPaint)
+                return
+            }
+
+            val xRange = xAxisRange(displayPoints)
+            val fit = fitCurve(displayPoints)
+            val yValues = displayPoints.map { it.capacityMah } + listOfNotNull(
+                fit?.valueAt(xRange.first),
+                fit?.valueAt(xRange.second)
+            )
+            val yMinMax = capacityAxisRange(yValues)
             val yMin = yMinMax.first
             val yMax = yMinMax.second
-            drawTicks(canvas, xMax, yMin, yMax)
-            drawFitCurve(canvas, xMax, yMin, yMax)
-            drawPoints(canvas, xMax, yMin, yMax)
+            drawTicks(canvas, xRange.first, xRange.second, yMin, yMax)
+            fit?.let {
+                drawFitCurve(canvas, it, xRange.first, xRange.second, yMin, yMax)
+                drawFitEquation(canvas, it)
+            }
+            drawPoints(canvas, displayPoints, xRange.first, xRange.second, yMin, yMax)
             drawLegend(canvas)
         }
 
@@ -3111,21 +3218,26 @@ class BatteryCurrentService : Service() {
             canvas.drawRoundRect(plotBounds, 8f, 8f, plotBackgroundPaint)
             canvas.drawRect(plotBounds, axisPaint)
             titlePaint.textAlign = Paint.Align.LEFT
-            canvas.drawText("Capacity vs discharge current", plotBounds.left, 26f, titlePaint)
+            val title = if (graphMode == CapacityStatsGraphMode.TEMPERATURE) {
+                "Capacity vs battery temp"
+            } else {
+                "Capacity vs discharge current"
+            }
+            canvas.drawText(title, plotBounds.left, 26f, titlePaint)
         }
 
-        private fun drawTicks(canvas: Canvas, xMax: Double, yMin: Double, yMax: Double) {
+        private fun drawTicks(canvas: Canvas, xMin: Double, xMax: Double, yMin: Double, yMax: Double) {
             labelPaint.color = capacityRateLabelColor()
-            val xStep = chooseNiceStep(xMax / 4.0)
+            val xStep = chooseNiceStep((xMax - xMin).coerceAtLeast(1e-6) / 4.0)
             val yStep = chooseNiceStep((yMax - yMin).coerceAtLeast(1.0) / 4.0)
 
             labelPaint.textAlign = Paint.Align.CENTER
-            var xTick = 0.0
+            var xTick = ceil(xMin / xStep) * xStep
             while (xTick <= xMax + xStep * 0.5) {
-                val x = xForRate(xTick, xMax)
+                val x = xForValue(xTick, xMin, xMax)
                 canvas.drawLine(x, plotBounds.top, x, plotBounds.bottom, gridPaint)
                 canvas.drawLine(x, plotBounds.bottom, x, plotBounds.bottom + 8f, axisPaint)
-                canvas.drawText(formatCRateTick(xTick), x, plotBounds.bottom + 30f, labelPaint)
+                canvas.drawText(formatXTick(xTick), x, plotBounds.bottom + 30f, labelPaint)
                 xTick += xStep
             }
 
@@ -3140,16 +3252,23 @@ class BatteryCurrentService : Service() {
             }
 
             labelPaint.textAlign = Paint.Align.CENTER
-            canvas.drawText("Discharge current (C)", plotBounds.centerX(), height - 14f, labelPaint)
+            canvas.drawText(xAxisLabel(), plotBounds.centerX(), height - 14f, labelPaint)
             canvas.save()
             canvas.rotate(-90f, 24f, plotBounds.centerY())
             canvas.drawText("Capacity (mAh)", 24f, plotBounds.centerY(), labelPaint)
             canvas.restore()
         }
 
-        private fun drawPoints(canvas: Canvas, xMax: Double, yMin: Double, yMax: Double) {
-            points.forEach { point ->
-                val x = xForRate(point.cRate, xMax)
+        private fun drawPoints(
+            canvas: Canvas,
+            items: List<CapacityRatePoint>,
+            xMin: Double,
+            xMax: Double,
+            yMin: Double,
+            yMax: Double
+        ) {
+            items.forEach { point ->
+                val x = xForValue(xValue(point), xMin, xMax)
                 val y = yForCapacity(point.capacityMah, yMin, yMax)
                 if (point.source == CapacityRateSource.FULL) {
                     drawDiamond(canvas, x, y, 5f, fullPaint)
@@ -3161,18 +3280,33 @@ class BatteryCurrentService : Service() {
             }
         }
 
-        private fun drawFitCurve(canvas: Canvas, xMax: Double, yMin: Double, yMax: Double) {
-            val fit = fitCurve(points) ?: return
+        private fun drawFitCurve(canvas: Canvas, fit: CapacityFit, xMin: Double, xMax: Double, yMin: Double, yMax: Double) {
             val path = Path()
             val segments = 72
             for (i in 0..segments) {
-                val xValue = xMax * i / segments.toDouble()
+                val xValue = xMin + (xMax - xMin) * i / segments.toDouble()
                 val yValue = fit.valueAt(xValue)
-                val x = xForRate(xValue, xMax)
+                val x = xForValue(xValue, xMin, xMax)
                 val y = yForCapacity(yValue, yMin, yMax)
                 if (i == 0) path.moveTo(x, y) else path.lineTo(x, y)
             }
             canvas.drawPath(path, fitPaint)
+        }
+
+        private fun drawFitEquation(canvas: Canvas, fit: CapacityFit) {
+            equationPaint.color = capacityRateLabelColor()
+            val variableText = if (graphMode == CapacityStatsGraphMode.TEMPERATURE) "T" else "C"
+            val slopeText = if (fit.b < 0.0) {
+                String.format(Locale.US, " - %.0f*%s", abs(fit.b), variableText)
+            } else {
+                String.format(Locale.US, " + %.0f*%s", fit.b, variableText)
+            }
+            canvas.drawText(
+                String.format(Locale.US, "fit: mAh = %.0f%s", fit.a, slopeText),
+                plotBounds.right - 10f,
+                plotBounds.top + 24f,
+                equationPaint
+            )
         }
 
         private fun drawLegend(canvas: Canvas) {
@@ -3204,6 +3338,39 @@ class BatteryCurrentService : Service() {
             canvas.drawPath(path, paint)
         }
 
+        private fun displayPoints(): List<CapacityRatePoint> {
+            return if (graphMode == CapacityStatsGraphMode.TEMPERATURE) {
+                binCapacityTemperaturePoints(points)
+                    .sortedBy { it.temperatureC ?: Double.NaN }
+            } else {
+                binCapacityRatePoints(points)
+                    .sortedBy { it.cRate }
+            }
+        }
+
+        private fun xValue(point: CapacityRatePoint): Double {
+            return if (graphMode == CapacityStatsGraphMode.TEMPERATURE) {
+                point.temperatureC ?: Double.NaN
+            } else {
+                point.cRate
+            }
+        }
+
+        private fun xAxisRange(items: List<CapacityRatePoint>): Pair<Double, Double> {
+            return if (graphMode == CapacityStatsGraphMode.TEMPERATURE) {
+                val values = items.mapNotNull { it.temperatureC }
+                val minValue = values.minOrNull() ?: 20.0
+                val maxValue = values.maxOrNull() ?: 45.0
+                val range = (maxValue - minValue).coerceAtLeast(5.0)
+                val paddedMin = minValue - range * 0.10
+                val paddedMax = maxValue + range * 0.10
+                val step = chooseNiceStep((paddedMax - paddedMin) / 4.0)
+                floor(paddedMin / step) * step to ceil(paddedMax / step) * step
+            } else {
+                0.0 to chooseAxisMax(items.maxOf { it.cRate }.coerceAtLeast(0.1))
+            }
+        }
+
         private fun capacityAxisRange(values: List<Double>): Pair<Double, Double> {
             val minValue = values.minOrNull() ?: 0.0
             val maxValue = values.maxOrNull() ?: 1.0
@@ -3214,8 +3381,9 @@ class BatteryCurrentService : Service() {
             return floor(paddedMin / step) * step to ceil(paddedMax / step) * step
         }
 
-        private fun xForRate(cRate: Double, xMax: Double): Float {
-            return plotBounds.left + (cRate.coerceIn(0.0, xMax) / xMax).toFloat() * plotBounds.width()
+        private fun xForValue(value: Double, xMin: Double, xMax: Double): Float {
+            val fraction = ((value.coerceIn(xMin, xMax) - xMin) / (xMax - xMin).coerceAtLeast(1e-6)).toFloat()
+            return plotBounds.left + fraction * plotBounds.width()
         }
 
         private fun yForCapacity(capacityMah: Double, yMin: Double, yMax: Double): Float {
@@ -3223,11 +3391,21 @@ class BatteryCurrentService : Service() {
             return plotBounds.bottom - fraction * plotBounds.height()
         }
 
-        private fun formatCRateTick(value: Double): String {
-            return if (value < 1.0) {
+        private fun formatXTick(value: Double): String {
+            return if (graphMode == CapacityStatsGraphMode.TEMPERATURE) {
+                String.format(Locale.US, "%.0f°", value)
+            } else if (value < 1.0) {
                 String.format(Locale.US, "%.2fC", value)
             } else {
                 String.format(Locale.US, "%.0fC", value)
+            }
+        }
+
+        private fun xAxisLabel(): String {
+            return if (graphMode == CapacityStatsGraphMode.TEMPERATURE) {
+                "Battery temperature (°C)"
+            } else {
+                "Discharge current (C)"
             }
         }
 
@@ -3283,19 +3461,15 @@ class BatteryCurrentService : Service() {
 
         private fun fitCurve(items: List<CapacityRatePoint>): CapacityFit? {
             if (items.size < 2) return null
-            return if (items.size >= 3) {
-                quadraticFit(items) ?: linearFit(items)
-            } else {
-                linearFit(items)
-            }
+            return linearFit(items)
         }
 
         private fun linearFit(items: List<CapacityRatePoint>): CapacityFit? {
             val n = items.size.toDouble()
-            val sumX = items.sumOf { it.cRate }
+            val sumX = items.sumOf { xValue(it) }
             val sumY = items.sumOf { it.capacityMah }
-            val sumXX = items.sumOf { it.cRate * it.cRate }
-            val sumXY = items.sumOf { it.cRate * it.capacityMah }
+            val sumXX = items.sumOf { xValue(it) * xValue(it) }
+            val sumXY = items.sumOf { xValue(it) * it.capacityMah }
             val denominator = n * sumXX - sumX * sumX
             if (abs(denominator) < 1e-9) return null
             val b = (n * sumXY - sumX * sumY) / denominator
