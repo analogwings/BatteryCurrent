@@ -1260,8 +1260,8 @@ class BatteryCurrentService : Service() {
                 discharge = lightGraphDischargeColor,
                 warm = lightGraphWarningColor,
                 cool = lightGraphAccentColor,
-                rightAxisPositive = Color.rgb(36, 125, 78),
-                rightAxisNegative = Color.rgb(214, 100, 12),
+                rightAxisPositive = Color.rgb(30, 115, 215),
+                rightAxisNegative = Color.rgb(140, 75, 25),
                 thresholdLow = Color.argb(130, 190, 45, 45),
                 thresholdHigh = Color.argb(130, 38, 135, 82)
             )
@@ -1294,8 +1294,8 @@ class BatteryCurrentService : Service() {
                 discharge = graphDischargeTextColor,
                 warm = graphWarmTextColor,
                 cool = graphCoolTextColor,
-                rightAxisPositive = Color.rgb(170, 245, 150),
-                rightAxisNegative = Color.rgb(255, 165, 55),
+                rightAxisPositive = Color.rgb(105, 185, 255),
+                rightAxisNegative = Color.rgb(205, 135, 75),
                 thresholdLow = Color.argb(105, 230, 95, 95),
                 thresholdHigh = Color.argb(105, 82, 190, 128)
             )
@@ -3426,7 +3426,7 @@ class BatteryCurrentService : Service() {
         }
 
         private fun capacityRateQuickColor(): Int {
-            return if (palette.isLight) Color.rgb(0, 175, 78) else palette.rightAxisPositive
+            return if (palette.isLight) Color.rgb(0, 175, 78) else palette.cool
         }
 
         private fun capacityRateFullColor(): Int {
@@ -4347,14 +4347,14 @@ class BatteryCurrentService : Service() {
             strokeJoin = Paint.Join.ROUND
         }
         private val batteryLinePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.rgb(170, 245, 150)
+            color = palette.rightAxisPositive
             style = Paint.Style.STROKE
             strokeWidth = 4f
             strokeCap = Paint.Cap.ROUND
             strokeJoin = Paint.Join.ROUND
         }
         private val rightAxisAveragePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.rgb(170, 245, 150)
+            color = palette.rightAxisPositive
             style = Paint.Style.STROKE
             strokeWidth = 2f
             strokeCap = Paint.Cap.ROUND
