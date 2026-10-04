@@ -288,6 +288,10 @@ class BatteryCapacityEstimator(private val context: Context) {
             .sortedBy { it.endTimestampMs }
     }
 
+    fun calibrationEvents(): List<CapacityEventSummary> {
+        return readCapacityEvents(includeExcluded = true)
+    }
+
     fun setCapacityEventExcluded(eventId: String, excluded: Boolean): Boolean {
         if (!eventsFile.exists()) return false
         ensureEventsHeader(CAPACITY_EVENTS_HEADER)

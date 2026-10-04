@@ -113,6 +113,7 @@ class BatteryCurrentService : Service() {
     private var socCurvePopupView: View? = null
     private var calibrationResultPopupView: View? = null
     private var capacityStatsPopupView: View? = null
+    private var statsDetailsPopupView: View? = null
     private var capacityStatsGraphMode = CapacityStatsGraphMode.DISCHARGE_RATE
     private var graphMenuCollapsed = false
     private val capacityEstimator by lazy { BatteryCapacityEstimator(this) }
@@ -1854,32 +1855,16 @@ class BatteryCurrentService : Service() {
 
     private fun buildPrimaryCapacityLine(estimateMah: Int?): CapacityLine {
         val palette = graphPalette()
-        val fdResult = FullDischargeTest.latestResult(this)
-        if (fdResult != null) {
-            val label = "Calibration battery capacity [${fdResult.startTimestampText}]:\n"
-            val standardizedValue = standardizedFullDischargeCapacity(fdResult)
-            val usageValue = adjustedFullDischargeCapacity(fdResult)
-            val stdValue = String.format(Locale.US, "%dmAh", standardizedValue)
-            val usageText = String.format(Locale.US, "%dmAh", usageValue)
-            val secondLine = "Std: $stdValue, Usage based: $usageText"
-            val text = label + secondLine
-            val stdValueStart = text.indexOf(stdValue)
-            val usageValueStart = text.indexOf(usageText)
-            return CapacityLine(
-                text = text,
-                labelRanges = listOf(0 until label.length, label.length until stdValueStart, (stdValueStart + stdValue.length) until usageValueStart),
-                valueRanges = listOf(stdValueStart until stdValueStart + stdValue.length, usageValueStart until usageValueStart + usageText.length),
-                valueColor = capacityEstimateColor(usageValue)
-            )
-        }
-
-        val label = "Estimated battery capacity: "
-        val value = estimateMah?.let { String.format(Locale.US, "%dmAh", it) } ?: "--"
+        val summary = BatteryCapacitySummary.load(this, capacityEstimator)
+        val currentMah = summary.current.meanMah?.roundToInt() ?: estimateMah
+        val text = summary.displayText()
+        val valueStart = text.indexOf(": ") + 2
+        val valueEnd = text.indexOf('\n')
         return CapacityLine(
-            text = label + value,
-            labelRanges = listOf(0 until label.length),
-            valueRanges = listOf(label.length until label.length + value.length),
-            valueColor = estimateMah?.let { capacityEstimateColor(it) } ?: palette.cool
+            text = text,
+            labelRanges = listOf(0 until valueStart, valueEnd until text.length),
+            valueRanges = listOf(valueStart until valueEnd),
+            valueColor = currentMah?.let { capacityEstimateColor(it) } ?: palette.cool
         )
     }
 
@@ -1892,14 +1877,7 @@ class BatteryCurrentService : Service() {
     }
 
     private fun adjustedFullDischargeCapacity(fdResult: FullDischargeTest.Result): Int {
-        val fdTimestampMs = parseCapacityDate(fdResult.startTimestampText) ?: return fdResult.capacityEstimateMah
-        val anchorEstimate = capacityEstimator.estimateNearTimestamp(fdTimestampMs)
-        val recentEstimate = capacityEstimator.recentWeightedEstimate()
-        if (anchorEstimate == null || recentEstimate == null || anchorEstimate <= 0) {
-            return fdResult.capacityEstimateMah
-        }
-        val ratio = (recentEstimate.toDouble() / anchorEstimate).coerceIn(0.95, 1.05)
-        return (fdResult.capacityEstimateMah * ratio).roundToInt()
+        return BatteryCapacitySummary.usageBasedCalibrationCapacity(fdResult, capacityEstimator)
     }
 
     private fun standardizedFullDischargeCapacity(fdResult: FullDischargeTest.Result): Int {
@@ -2627,6 +2605,29 @@ class BatteryCurrentService : Service() {
                 })
             })
 
+            addView(LinearLayout(this@BatteryCurrentService).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER
+                setPadding(0, 0, 0, 8)
+                listOf("Dischg Stats", "Charge Stats", "Calib Stats").forEach { label ->
+                    addView(Button(this@BatteryCurrentService).apply {
+                        styleGraphMenuButton(this, textSizeSp = 11f, backgroundColor = Color.WHITE, textColor = Color.BLACK)
+                        text = label
+                        setPadding(8, 14, 8, 14)
+                        layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+                            setMargins(4, 7, 4, 7)
+                        }
+                        setOnClickListener {
+                            when (label) {
+                                "Dischg Stats" -> showDirectionStatsPopup(isDischarge = true)
+                                "Charge Stats" -> showDirectionStatsPopup(isDischarge = false)
+                                else -> showCalibrationStatsPopup()
+                            }
+                        }
+                    })
+                }
+            })
+
             addCapacityEventLine("Reference capacity", stats.referenceCapacityMah?.let { "${it}mAh" } ?: "n/a")
             addCapacityEventLine("0.2C reference", stats.referenceCurrentMa?.let { String.format(Locale.US, "%.0fmA", it) } ?: "n/a")
             addCapacityEventLine("Load sensitivity", stats.peukertK?.let { String.format(Locale.US, "k=%.2f", it) } ?: "learning")
@@ -2646,8 +2647,6 @@ class BatteryCurrentService : Service() {
                 setMargins(0, 10, 0, 2)
             })
 
-            addStatsSection("Discharge", stats.dischargeStats)
-            addStatsSection("Charge", stats.chargeStats)
         }
 
         capacityStatsPopupView = popup
@@ -2666,6 +2665,113 @@ class BatteryCurrentService : Service() {
         } catch (_: Exception) {
             capacityStatsPopupView = null
         }
+    }
+
+    private fun showDirectionStatsPopup(isDischarge: Boolean) {
+        val stats = capacityEstimator.capacityStats()
+        showStatsDetailsPopup(if (isDischarge) "Discharge Stats" else "Charge Stats", heightFraction = 0.35) {
+            addStatsSection(if (isDischarge) "Discharge" else "Charge", if (isDischarge) stats.dischargeStats else stats.chargeStats)
+        }
+    }
+
+    private fun showCalibrationStatsPopup() {
+        val results = FullDischargeTest.allResults(this)
+        val calibration = BatteryCapacitySummary.distribution(results.map { it.capacityEstimateMah.toDouble() })
+        showStatsDetailsPopup("Calibration Stats") {
+            addCapacityEventLine("Full calibrations", calibration.count.toString())
+            addCapacityEventLine("Mean capacity", calibration.meanMah?.let { String.format(Locale.US, "%.0f mAh", it) } ?: "n/a")
+            addCapacityEventLine("Std deviation", calibration.standardDeviationMah?.let { String.format(Locale.US, "%.0f mAh", it) } ?: "n/a (need 2 events)")
+            addView(TextView(this@BatteryCurrentService).apply {
+                text = "Mean and sample standard deviation use all completed full calibrations (99% to 15%)."
+                textSize = 11f
+                setTextColor(graphPalette().mutedText)
+                setPadding(0, 8, 0, 8)
+            })
+            addStatsDetailsHeading("Full calibration events (${results.size})")
+            if (results.isEmpty()) {
+                addCapacityEventLine("Full calibration", "No completed events")
+            }
+            results.asReversed().forEach { result ->
+                addStatsDetailsHeading(result.startTimestampText)
+                addCapacityEventLine("Completed", result.endTimestampText ?: "n/a")
+                addView(TextView(this@BatteryCurrentService).apply {
+                    text = capacityEstimateDetailsText(result)
+                    textSize = 12f
+                    setTextColor(graphPalette().text)
+                    setPadding(0, 4, 0, 8)
+                })
+                result.dischargedMah?.let { addCapacityEventLine("Discharged", "$it mAh") }
+            }
+        }
+    }
+
+    private fun LinearLayout.addStatsDetailsHeading(title: String) {
+        addView(TextView(this@BatteryCurrentService).apply {
+            text = title
+            textSize = 12f
+            setTypeface(typeface, Typeface.BOLD)
+            setTextColor(graphPalette().estimateLabel)
+            setPadding(0, 12, 0, 4)
+        })
+    }
+
+    private fun showStatsDetailsPopup(title: String, heightFraction: Double = 0.75, populate: LinearLayout.() -> Unit) {
+        removeStatsDetailsPopup()
+        val palette = graphPalette()
+        val popup = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = graphPopupBackground(palette, cornerRadius = 12f)
+            setPadding(18, 14, 18, 14)
+            elevation = 40f
+            addView(LinearLayout(this@BatteryCurrentService).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                addView(TextView(this@BatteryCurrentService).apply {
+                    text = title
+                    textSize = 13f
+                    setTypeface(typeface, Typeface.BOLD)
+                    setTextColor(palette.text)
+                }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+                addView(Button(this@BatteryCurrentService).apply {
+                    styleCloseButton(this, palette)
+                    text = "x"
+                    setOnClickListener { removeStatsDetailsPopup() }
+                })
+            })
+            addView(ScrollView(this@BatteryCurrentService).apply {
+                isFillViewport = true
+                addView(LinearLayout(this@BatteryCurrentService).apply {
+                    orientation = LinearLayout.VERTICAL
+                    populate()
+                })
+            }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
+        }
+        val metrics = resources.displayMetrics
+        val params = WindowManager.LayoutParams(
+            minOf(820, metrics.widthPixels - 32),
+            (metrics.heightPixels * heightFraction).roundToInt(),
+            overlayType(),
+            WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
+            PixelFormat.TRANSLUCENT
+        ).apply {
+            gravity = Gravity.CENTER
+        }
+        try {
+            windowManager?.addView(popup, params)
+            statsDetailsPopupView = popup
+        } catch (_: Exception) {
+            statsDetailsPopupView = null
+        }
+    }
+
+    private fun removeStatsDetailsPopup() {
+        val view = statsDetailsPopupView ?: return
+        try {
+            windowManager?.removeView(view)
+        } catch (_: Exception) {
+            (view.parent as? LinearLayout)?.removeView(view)
+        }
+        statsDetailsPopupView = null
     }
 
     private fun capacityRateGraphPoints(referenceCapacityMah: Int?): List<CapacityRatePoint> {
@@ -2777,6 +2883,7 @@ class BatteryCurrentService : Service() {
     }
 
     private fun removeCapacityStatsPopup() {
+        removeStatsDetailsPopup()
         val view = capacityStatsPopupView ?: return
         try {
             windowManager?.removeView(view)

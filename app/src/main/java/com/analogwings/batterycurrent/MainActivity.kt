@@ -14,6 +14,8 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -60,6 +62,7 @@ class MainActivity : ComponentActivity() {
     private var pendingStartAction = BatteryCurrentService.ACTION_SHOW_OVERLAY
     private val monitoringRunningState = mutableStateOf(false)
     private val fullDischargeModeState = mutableStateOf(false)
+    private val capacitySummaryState = mutableStateOf<BatteryCapacitySummary.Summary?>(null)
 
     private val notificationPermissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
@@ -86,6 +89,7 @@ class MainActivity : ComponentActivity() {
                         initialShowCapacityPrompt = !BatteryCapacityReference.hasSeenPrompt(this),
                         fullDischargeModeEnabled = fullDischargeModeState.value,
                         monitoringRunning = monitoringRunningState.value,
+                        capacitySummary = capacitySummaryState.value,
                         onMonitorClick = {
                             if (monitoringRunningState.value) {
                                 stopBatteryService()
@@ -105,6 +109,7 @@ class MainActivity : ComponentActivity() {
                         onResetOverlayPosition = { resetForegroundOverlayPosition() },
                         onOriginalCapacityChanged = { capacityMah ->
                             BatteryCapacityReference.saveOriginalCapacityMah(this, capacityMah)
+                            capacitySummaryState.value = BatteryCapacitySummary.load(this)
                         },
                         onOriginalCapacitySkipped = {
                             BatteryCapacityReference.markPromptSeen(this)
@@ -219,6 +224,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun refreshStartupState() {
+        capacitySummaryState.value = BatteryCapacitySummary.load(this)
         val monitoringRunning = isMonitoringRunning()
         val calibrationLaunchPending = waitingForOverlayPermission ||
             pendingStartAction == BatteryCurrentService.ACTION_START_CALIBRATION_SETUP
@@ -258,6 +264,7 @@ private fun BatteryCurrentScreen(
     initialShowCapacityPrompt: Boolean,
     fullDischargeModeEnabled: Boolean,
     monitoringRunning: Boolean,
+    capacitySummary: BatteryCapacitySummary.Summary?,
     onMonitorClick: () -> Unit,
     onLightOverlayChanged: (Boolean) -> Unit,
     onAutoResetThresholdChanged: (Boolean) -> Unit,
@@ -323,7 +330,8 @@ private fun BatteryCurrentScreen(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(24.dp),
+            .padding(24.dp)
+            .verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
@@ -355,6 +363,15 @@ private fun BatteryCurrentScreen(
             text = "Start monitoring to show the floating readout, then tap it to open the graph.",
             style = MaterialTheme.typography.bodySmall
         )
+
+        capacitySummary?.let { summary ->
+            Spacer(modifier = Modifier.height(12.dp))
+            Text(
+                modifier = Modifier.fillMaxWidth(),
+                text = summary.displayText(),
+                style = MaterialTheme.typography.bodyMedium
+            )
+        }
 
         Spacer(modifier = Modifier.height(18.dp))
 
