@@ -2353,7 +2353,7 @@ class BatteryCurrentService : Service() {
             })
 
             addView(TextView(this@BatteryCurrentService).apply {
-                text = "Deviation from ideal linear SOC. Extreme outliers are ignored."
+                text = "Dots and line use the same recent SOC samples. Extreme outliers are ignored."
                 textSize = 11f
                 setTextColor(palette.mutedText)
                 setPadding(0, 6, 0, 8)
@@ -2372,7 +2372,11 @@ class BatteryCurrentService : Service() {
                 text = if (points.isEmpty()) {
                     "No SOC bucket data yet. Data fills in as battery % changes while monitoring."
                 } else {
-                    String.format(Locale.US, "%d balanced samples, max fitted deviation %.0f%%", learnedSampleCount, maxCurveDeviation * 100.0)
+                    if (learnedSampleCount == 0) {
+                        String.format(Locale.US, "Historical bucket averages, max fitted deviation %.1f%%", maxCurveDeviation * 100.0)
+                    } else {
+                        String.format(Locale.US, "%d recent samples, max fitted deviation %.1f%%", learnedSampleCount, maxCurveDeviation * 100.0)
+                    }
                 }
                 textSize = 11f
                 setTextColor(palette.estimateLabel)

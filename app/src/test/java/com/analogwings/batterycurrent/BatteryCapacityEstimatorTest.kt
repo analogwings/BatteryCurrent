@@ -2,6 +2,7 @@ package com.analogwings.batterycurrent
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class BatteryCapacityEstimatorTest {
@@ -41,6 +42,82 @@ class BatteryCapacityEstimatorTest {
         )
 
         assertNull(BatteryCapacityEstimator.includedEventWeightedEstimate(events))
+    }
+
+    @Test
+    fun socLinearityPointsForSamples_lineMatchesVisibleDotMeanInEveryBucket() {
+        val samples = listOf(
+            socSample(20, 300.0), socSample(20, 320.0), socSample(20, 340.0),
+            socSample(30, 340.0), socSample(30, 360.0), socSample(30, 380.0),
+            socSample(40, 380.0), socSample(40, 400.0), socSample(40, 420.0)
+        )
+
+        val points = BatteryCapacityEstimator.socLinearityPointsForSamples(samples)
+        val line = points.filter { it.isFittedBucketAverage }
+        val dots = points.filterNot { it.isFittedBucketAverage }
+
+        assertEquals(3, line.size)
+        assertEquals(9, dots.size)
+        assertTrue(points.all { it.idealMah == 360.0 })
+        line.forEach { bucket ->
+            val bucketDots = dots.filter { it.bucketStartPct == bucket.bucketStartPct }
+            assertEquals(bucketDots.map { it.deviationFromIdeal }.average(), bucket.deviationFromIdeal, 0.000001)
+            assertEquals(bucketDots.map { it.learnedMah }.average(), bucket.learnedMah, 0.000001)
+            assertEquals(bucketDots.size, bucket.sampleCount)
+        }
+    }
+
+    @Test
+    fun socLinearityPointsForSamples_dropsOldHighCapacityHistoryFromBothDotsAndLine() {
+        val oldSamples = List(100) { index -> socSample(20, 600.0, index.toLong()) }
+        val recentSamples = List(100) { index ->
+            socSample(if (index % 2 == 0) 20 else 30, if (index % 2 == 0) 300.0 else 360.0, 100L + index)
+        }
+
+        val points = BatteryCapacityEstimator.socLinearityPointsForSamples(oldSamples + recentSamples)
+        val line = points.filter { it.isFittedBucketAverage }
+
+        assertEquals(100, points.count { !it.isFittedBucketAverage })
+        assertTrue(points.all { it.idealMah == 330.0 })
+        assertEquals(listOf(300.0, 360.0), line.map { it.learnedMah })
+        assertEquals(-30.0 / 330.0, line.first().deviationFromIdeal, 0.000001)
+        assertEquals(30.0 / 330.0, line.last().deviationFromIdeal, 0.000001)
+    }
+
+    @Test
+    fun socLinearityPointsForSamples_referenceUsesTheSamePopulationSampleCounts() {
+        val points = BatteryCapacityEstimator.socLinearityPointsForSamples(
+            List(3) { socSample(20, 300.0) } + List(6) { socSample(30, 450.0) }
+        )
+        val line = points.filter { it.isFittedBucketAverage }
+
+        assertTrue(points.all { it.idealMah == 400.0 })
+        assertEquals(0.0, line.sumOf { it.deviationFromIdeal * it.sampleCount }, 0.000001)
+    }
+
+    @Test
+    fun socLinearityPointsForSamples_requiresFiveVisibleTopBucketSamples() {
+        val samples = List(3) { socSample(20, 400.0) } + List(4) { socSample(90, 410.0) }
+        val sparsePoints = BatteryCapacityEstimator.socLinearityPointsForSamples(samples)
+        val qualifiedPoints = BatteryCapacityEstimator.socLinearityPointsForSamples(samples + socSample(90, 410.0))
+
+        assertEquals(listOf(20), sparsePoints.filter { it.isFittedBucketAverage }.map { it.bucketStartPct })
+        assertEquals(4, sparsePoints.count { !it.isFittedBucketAverage && it.bucketStartPct == 90 })
+        assertEquals(listOf(20, 90), qualifiedPoints.filter { it.isFittedBucketAverage }.map { it.bucketStartPct })
+    }
+
+    @Test
+    fun socLinearityPointsForSamples_doesNotProduceInvalidReferenceValues() {
+        val points = BatteryCapacityEstimator.socLinearityPointsForSamples(
+            listOf(socSample(20, Double.NaN), socSample(20, Double.POSITIVE_INFINITY), socSample(20, 0.0))
+        )
+
+        assertTrue(points.isEmpty())
+        assertTrue(BatteryCapacityEstimator.socLinearityPointsForSamples(emptyList()).isEmpty())
+    }
+
+    private fun socSample(startPct: Int, learnedMah: Double, timestampMs: Long = 1L): BatteryCapacityEstimator.SocBucketSample {
+        return BatteryCapacityEstimator.SocBucketSample(timestampMs, startPct, startPct + 10, learnedMah, 500.0, 30.0)
     }
 
     @Test

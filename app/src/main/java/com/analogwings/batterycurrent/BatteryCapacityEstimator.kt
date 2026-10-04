@@ -83,7 +83,7 @@ class BatteryCapacityEstimator(private val context: Context) {
         val highRateEventCount: Int
     )
 
-    private data class SocBucketSample(
+    internal data class SocBucketSample(
         val timestampMs: Long,
         val bucketStartPct: Int,
         val bucketEndPct: Int,
@@ -438,31 +438,9 @@ class BatteryCapacityEstimator(private val context: Context) {
 
     fun socLinearityPoints(): List<SocLinearityPoint> {
         migrateLegacyTopSocBucketIfNeeded()
-        val learnedBuckets = socBucketLinearityPoints()
-        val idealMah = learnedBuckets
-            .takeIf { it.isNotEmpty() }
-            ?.firstOrNull()
-            ?.idealMah
-
-        val displaySamples = readSocBucketSamples()
-            .takeIf { it.isNotEmpty() && idealMah != null && idealMah > 0.0 }
-            ?.let { samples ->
-                filterSocLinearityOutliers(samples).takeLast(MAX_SOC_LINEARITY_DISPLAY_SAMPLES)
-            }
-            ?.map { sample ->
-                SocLinearityPoint(
-                    bucketStartPct = sample.bucketStartPct,
-                    bucketEndPct = sample.bucketEndPct,
-                    midpointPct = (sample.bucketStartPct + sample.bucketEndPct) / 2,
-                    deviationFromIdeal = (sample.learnedMah - idealMah!!) / idealMah,
-                    learnedMah = sample.learnedMah,
-                    idealMah = idealMah,
-                    sampleCount = 1
-                )
-            }
-            ?: emptyList()
-
-        return learnedBuckets + displaySamples
+        val samples = readSocBucketSamples().filter { it.learnedMah.isFinite() && it.learnedMah > 0.0 }
+        if (samples.isEmpty()) return socBucketLinearityPoints()
+        return socLinearityPointsForSamples(filterSocLinearityOutliers(samples))
     }
 
     private fun socBucketLinearityPoints(): List<SocLinearityPoint> {
@@ -1545,6 +1523,58 @@ class BatteryCapacityEstimator(private val context: Context) {
     }
 
     internal companion object {
+        fun socLinearityPointsForSamples(samples: List<SocBucketSample>): List<SocLinearityPoint> {
+            val displaySamples = samples
+                .filter { it.learnedMah.isFinite() && it.learnedMah > 0.0 }
+                .sortedBy { it.timestampMs }
+                .takeLast(MAX_SOC_LINEARITY_DISPLAY_SAMPLES)
+            if (displaySamples.isEmpty()) return emptyList()
+
+            val buckets = displaySamples.groupBy { it.bucketStartPct }.map { (bucketStart, bucketSamples) ->
+                SocBucketSummary(
+                    bucketStartPct = bucketStart,
+                    bucketEndPct = bucketSamples.first().bucketEndPct,
+                    learnedMah = bucketSamples.map { it.learnedMah }.average(),
+                    learnedWh = null,
+                    sampleCount = bucketSamples.size,
+                    avgCurrentMa = null,
+                    avgTempC = null
+                )
+            }
+            val learnedBuckets = filteredSocBucketAveragesForLinearity(buckets)
+            val totalSamples = learnedBuckets.sumOf { it.sampleCount }
+            val idealMah = if (totalSamples > 0) {
+                learnedBuckets.sumOf { (it.learnedMah ?: 0.0) * it.sampleCount } / totalSamples
+            } else {
+                displaySamples.map { it.learnedMah }.average()
+            }
+            val bucketPoints = learnedBuckets.mapNotNull { bucket ->
+                val learnedMah = bucket.learnedMah ?: return@mapNotNull null
+                SocLinearityPoint(
+                    bucketStartPct = bucket.bucketStartPct,
+                    bucketEndPct = bucket.bucketEndPct,
+                    midpointPct = (bucket.bucketStartPct + bucket.bucketEndPct) / 2,
+                    deviationFromIdeal = (learnedMah - idealMah) / idealMah,
+                    learnedMah = learnedMah,
+                    idealMah = idealMah,
+                    sampleCount = bucket.sampleCount,
+                    isFittedBucketAverage = true
+                )
+            }
+            val samplePoints = displaySamples.map { sample ->
+                SocLinearityPoint(
+                    bucketStartPct = sample.bucketStartPct,
+                    bucketEndPct = sample.bucketEndPct,
+                    midpointPct = (sample.bucketStartPct + sample.bucketEndPct) / 2,
+                    deviationFromIdeal = (sample.learnedMah - idealMah) / idealMah,
+                    learnedMah = sample.learnedMah,
+                    idealMah = idealMah,
+                    sampleCount = 1
+                )
+            }
+            return bucketPoints + samplePoints
+        }
+
         fun includedEventWeightedEstimate(
             events: List<CapacityEventSummary>,
             limitDays: Int = 10
