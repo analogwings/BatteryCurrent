@@ -2496,7 +2496,6 @@ class BatteryCurrentService : Service() {
         val standardized = standardizedFullDischargeCapacity(result)
         val usageBased = adjustedFullDischargeCapacity(result)
         val referenceCapacity = BatteryCapacityReference.originalCapacityMah(this)
-        val referenceCurrentMa = referenceCapacity?.let { it * 0.2 }
         val avgCRate = if (referenceCapacity != null && referenceCapacity > 0 && result.avgCurrentMa != null) {
             result.avgCurrentMa / referenceCapacity
         } else {
@@ -2504,14 +2503,11 @@ class BatteryCurrentService : Service() {
         }
         val lines = ArrayList<String>()
         lines.add(String.format(Locale.US, "Std capacity: %dmAh", standardized))
-        lines.add("Std target: 0.2C, 20\u00B0C, 2.75V cutoff")
         lines.add(String.format(Locale.US, "Usage based: %dmAh", usageBased))
         lines.add(String.format(Locale.US, "Raw calibration: %dmAh", result.capacityEstimateMah))
         lines.add("Average current: ${result.avgCurrentMa?.let { String.format(Locale.US, "%.0fmA", it) } ?: "n/a"}${avgCRate?.let { String.format(Locale.US, " (%.2fC)", it) } ?: ""}")
-        referenceCurrentMa?.let { lines.add(String.format(Locale.US, "0.2C reference: %.0fmA", it)) }
         lines.add("Average temp: ${result.avgTempC?.let { String.format(Locale.US, "%.1f\u00B0C", it) } ?: "n/a"}")
         lines.add("Average voltage: ${result.avgVoltageV?.let { String.format(Locale.US, "%.3fV", it) } ?: "n/a"}")
-        lines.add("Cutoff voltage is not yet recorded separately; voltage line shows measured average.")
         return lines.joinToString("\n")
     }
 
@@ -2681,6 +2677,8 @@ class BatteryCurrentService : Service() {
     private fun showCalibrationStatsPopup() {
         val results = FullDischargeTest.allResults(this)
         val calibration = BatteryCapacitySummary.distribution(results.map { it.capacityEstimateMah.toDouble() })
+        val history = CalibrationCapacityHistory.points(results)
+        val fit = CalibrationCapacityHistory.linearFit(history)
         showStatsDetailsPopup("Calibration Stats") {
             addCapacityEventLine("Full calibrations", calibration.count.toString())
             addCapacityEventLine("Mean capacity", calibration.meanMah?.let { String.format(Locale.US, "%.0f mAh", it) } ?: "n/a")
@@ -2691,7 +2689,34 @@ class BatteryCurrentService : Service() {
                 setTextColor(graphPalette().mutedText)
                 setPadding(0, 8, 0, 8)
             })
+            addStatsDetailsHeading("Calibration capacity over time")
+            addView(CalibrationHistoryGraphView(this@BatteryCurrentService, graphPalette(), history, fit), LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                430
+            ).apply {
+                setMargins(0, 8, 0, 4)
+            })
+            addView(TextView(this@BatteryCurrentService).apply {
+                text = when {
+                    history.isEmpty() -> "No dated calibration events yet."
+                    fit == null -> "Linear fit needs at least 2 events at different times."
+                    else -> String.format(Locale.US, "Linear fit: %+.2f mAh/day", fit.slopeMahPerDay) +
+                        (fit.rSquared?.let { String.format(Locale.US, " (R\u00B2=%.2f)", it) } ?: "")
+                } + if (history.size < results.size) "\n${results.size - history.size} events have no readable date; they remain listed below." else ""
+                textSize = 11f
+                setTextColor(graphPalette().mutedText)
+                setPadding(0, 4, 0, 8)
+            })
             addStatsDetailsHeading("Full calibration events (${results.size})")
+            addView(TextView(this@BatteryCurrentService).apply {
+                text = "Std target: 0.2C, 20\u00B0C, 2.75V cutoff"
+                textSize = 11f
+                setTextColor(graphPalette().mutedText)
+                setPadding(0, 4, 0, 8)
+            })
+            BatteryCapacityReference.originalCapacityMah(this@BatteryCurrentService)?.let { capacityMah ->
+                addCapacityEventLine("0.2C reference", String.format(Locale.US, "%.0fmA", capacityMah * 0.2))
+            }
             if (results.isEmpty()) {
                 addCapacityEventLine("Full calibration", "No completed events")
             }
@@ -2895,6 +2920,119 @@ class BatteryCurrentService : Service() {
             (view.parent as? LinearLayout)?.removeView(view)
         }
         capacityStatsPopupView = null
+    }
+
+    private class CalibrationHistoryGraphView(
+        context: Context,
+        private val palette: GraphPalette,
+        private val points: List<CalibrationCapacityHistory.Point>,
+        private val fit: CalibrationCapacityHistory.LinearFit?
+    ) : View(context) {
+        private val bounds = RectF()
+        private val axisPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = palette.axis
+            strokeWidth = 2f
+        }
+        private val gridPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = palette.grid
+            strokeWidth = 1f
+        }
+        private val pointPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = palette.cool
+        }
+        private val fitPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = palette.warm
+            strokeWidth = 3f
+        }
+        private val labelPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = palette.mutedText
+            textSize = 18f
+            typeface = Typeface.MONOSPACE
+        }
+
+        override fun onDraw(canvas: Canvas) {
+            super.onDraw(canvas)
+            bounds.set(100f, 44f, width - 32f, height - 88f)
+            if (bounds.width() <= 0f || bounds.height() <= 0f) return
+            if (points.isEmpty()) {
+                labelPaint.textAlign = Paint.Align.CENTER
+                canvas.drawText("No calibration history yet", bounds.centerX(), bounds.centerY(), labelPaint)
+                return
+            }
+
+            val firstTime = points.first().timestampMs
+            val lastTime = points.last().timestampMs
+            val span = (lastTime - firstTime).coerceAtLeast(DAY_MS)
+            val padding = (span * 0.05).toLong()
+            val startTime = if (lastTime > firstTime) firstTime - padding else firstTime - DAY_MS / 2
+            val endTime = if (lastTime > firstTime) lastTime + padding else firstTime + DAY_MS / 2
+            val capacityValues = points.map { it.capacityMah } +
+                (fit?.let { listOf(it.capacityAt(firstTime), it.capacityAt(lastTime)) } ?: emptyList())
+            val lowest = capacityValues.minOrNull() ?: 0.0
+            val highest = capacityValues.maxOrNull() ?: lowest
+            val capacityPadding = maxOf((highest - lowest) * 0.12, highest * 0.02, 20.0)
+            val rawStep = (highest - lowest + 2.0 * capacityPadding) / 4.0
+            val magnitude = 10.0.pow(floor(log10(rawStep)))
+            val step = doubleArrayOf(1.0, 2.0, 5.0, 10.0).first { it * magnitude >= rawStep } * magnitude
+            val minCapacity = floor((lowest - capacityPadding).coerceAtLeast(0.0) / step) * step
+            val maxCapacity = ceil((highest + capacityPadding) / step) * step
+
+            fun xForTime(timestampMs: Long): Float {
+                return bounds.left + ((timestampMs - startTime).toDouble() / (endTime - startTime)).toFloat() * bounds.width()
+            }
+            fun yForCapacity(capacityMah: Double): Float {
+                return bounds.bottom - ((capacityMah - minCapacity) / (maxCapacity - minCapacity)).toFloat() * bounds.height()
+            }
+
+            labelPaint.textAlign = Paint.Align.RIGHT
+            var capacityTick = minCapacity
+            while (capacityTick <= maxCapacity + step * 0.1) {
+                val verticalPosition = yForCapacity(capacityTick)
+                canvas.drawLine(bounds.left, verticalPosition, bounds.right, verticalPosition, gridPaint)
+                canvas.drawText(capacityTick.roundToInt().toString(), bounds.left - 10f, verticalPosition + 6f, labelPaint)
+                capacityTick += step
+            }
+            val dateFormat = SimpleDateFormat(if (lastTime - firstTime < DAY_MS) "HH:mm" else "MMM d", Locale.US)
+            labelPaint.textAlign = Paint.Align.CENTER
+            for (tickIndex in 0..4) {
+                val timestamp = startTime + ((endTime - startTime) * (tickIndex / 4.0)).toLong()
+                val horizontalPosition = xForTime(timestamp)
+                canvas.drawLine(horizontalPosition, bounds.top, horizontalPosition, bounds.bottom, gridPaint)
+                canvas.drawText(dateFormat.format(Date(timestamp)), horizontalPosition, bounds.bottom + 27f, labelPaint)
+            }
+            canvas.drawLine(bounds.left, bounds.top, bounds.left, bounds.bottom, axisPaint)
+            canvas.drawLine(bounds.left, bounds.bottom, bounds.right, bounds.bottom, axisPaint)
+
+            val savedCanvas = canvas.save()
+            canvas.clipRect(bounds)
+            fit?.let { fitted ->
+                canvas.drawLine(
+                    xForTime(firstTime), yForCapacity(fitted.capacityAt(firstTime)),
+                    xForTime(lastTime), yForCapacity(fitted.capacityAt(lastTime)), fitPaint
+                )
+            }
+            points.forEach { point ->
+                canvas.drawCircle(xForTime(point.timestampMs), yForCapacity(point.capacityMah), 5f, pointPaint)
+            }
+            canvas.restoreToCount(savedCanvas)
+
+            labelPaint.textAlign = Paint.Align.LEFT
+            canvas.drawCircle(bounds.left + 5f, 20f, 5f, pointPaint)
+            canvas.drawText("full calibration", bounds.left + 20f, 26f, labelPaint)
+            if (fit != null) {
+                val legendStart = bounds.right - 150f
+                canvas.drawLine(legendStart, 20f, legendStart + 25f, 20f, fitPaint)
+                canvas.drawText("linear fit", legendStart + 35f, 26f, labelPaint)
+            }
+            labelPaint.textAlign = Paint.Align.CENTER
+            canvas.save()
+            canvas.rotate(-90f, 24f, bounds.centerY())
+            canvas.drawText("Capacity (mAh)", 24f, bounds.centerY(), labelPaint)
+            canvas.restore()
+            val fullDateFormat = SimpleDateFormat("MMM d, yyyy", Locale.US)
+            val rangeText = fullDateFormat.format(Date(firstTime)) + " - " + fullDateFormat.format(Date(lastTime))
+            canvas.drawText(rangeText, bounds.centerX(), height - 24f, labelPaint)
+        }
     }
 
     private inner class CapacityTimeTrendView(
