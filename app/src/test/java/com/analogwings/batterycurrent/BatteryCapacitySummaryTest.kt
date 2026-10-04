@@ -71,6 +71,32 @@ class BatteryCapacitySummaryTest {
     }
 
     @Test
+    fun capacityChangeSinceNewUsesConfiguredOriginalCapacity() {
+        val summary = BatteryCapacitySummary.calculate(listOf(quickEvent(4389)), emptyList())
+            .copy(referenceCapacityMah = 5050)
+
+        assertEquals("Current battery capacity: 4389 mAh (-13.1%)", summary.displayText().lineSequence().first())
+    }
+
+    @Test
+    fun capacityChangeSinceNewKeepsTheSignForAnIncrease() {
+        val summary = BatteryCapacitySummary.calculate(listOf(quickEvent(5700)), emptyList())
+            .copy(referenceCapacityMah = 5000)
+
+        assertEquals("Current battery capacity: 5700 mAh (+14.0%)", summary.displayText().lineSequence().first())
+    }
+
+    @Test
+    fun capacityChangeSinceNewIsOmittedWithoutAValidOriginalCapacityOrEstimate() {
+        val summary = BatteryCapacitySummary.calculate(listOf(quickEvent(4389)), emptyList())
+        val noEstimate = BatteryCapacitySummary.calculate(emptyList(), emptyList()).copy(referenceCapacityMah = 5050)
+
+        assertEquals("Current battery capacity: 4389 mAh", summary.displayText().lineSequence().first())
+        assertEquals("Current battery capacity: 4389 mAh", summary.copy(referenceCapacityMah = 0).displayText().lineSequence().first())
+        assertEquals("Current battery capacity: Collecting data", noEstimate.displayText().lineSequence().first())
+    }
+
+    @Test
     fun singleEventDoesNotClaimZeroUncertainty() {
         val summary = BatteryCapacitySummary.calculate(emptyList(), listOf(calibration(4200)))
 

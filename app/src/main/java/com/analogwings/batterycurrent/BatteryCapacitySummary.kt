@@ -26,6 +26,11 @@ object BatteryCapacitySummary {
         fun displayText(): String {
             val estimate = current.meanMah?.let { String.format(Locale.US, "%.0f mAh", it) }
                 ?: "Collecting data"
+            val changeSinceNew = referenceCapacityMah?.takeIf { it > 0 }?.let { originalMah ->
+                current.meanMah?.takeIf { it.isFinite() && it > 0.0 }?.let { currentMah ->
+                    String.format(Locale.US, " (%+.1f%%)", (currentMah - originalMah) * 100.0 / originalMah)
+                }
+            }.orEmpty()
             val spread = current.standardDeviationMah?.let { String.format(Locale.US, "%.0f mAh", it) }
                 ?: "n/a (need 2 events)"
             val referenceCapacity = referenceCapacityMah?.takeIf { it > 0 }?.toDouble()
@@ -40,7 +45,7 @@ object BatteryCapacitySummary {
             } else {
                 "${quick.count} quick + ${calibration.count} full calibration events"
             }
-            return "Current battery capacity: $estimate\n" +
+            return "Current battery capacity: $estimate$changeSinceNew\n" +
                 "Std deviation (1\u03C3): $spread\n" +
                 "Avg Discharge: $currentText   Avg temp: $temperatureText\n" + sourceText
         }
