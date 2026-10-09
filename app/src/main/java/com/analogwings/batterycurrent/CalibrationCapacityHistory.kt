@@ -6,6 +6,8 @@ import java.util.Locale
 
 internal object CalibrationCapacityHistory {
     private const val DAY_MS = 86_400_000.0
+    private const val DAYS_PER_MONTH = 365.25 / 12.0
+    const val DEFAULT_TREND_WINDOW_MS = 90L * 86_400_000L
 
     data class Point(val timestampMs: Long, val capacityMah: Double)
 
@@ -15,6 +17,9 @@ internal object CalibrationCapacityHistory {
         val slopeMahPerDay: Double,
         val rSquared: Double?
     ) {
+        val slopeMahPerMonth: Double
+            get() = slopeMahPerDay * DAYS_PER_MONTH
+
         fun capacityAt(timestampMs: Long): Double {
             return interceptMah + slopeMahPerDay * ((timestampMs - originTimestampMs) / DAY_MS)
         }
@@ -34,6 +39,14 @@ internal object CalibrationCapacityHistory {
                 ?: return@mapNotNull null
             Point(time, result.capacityEstimateMah.toDouble())
         }.sortedBy { it.timestampMs }
+    }
+
+    fun defaultTrendPoints(points: List<Point>): List<Point> {
+        if (points.isEmpty()) return emptyList()
+        val firstTime = points.minOf { it.timestampMs }
+        val lastTime = points.maxOf { it.timestampMs }.coerceAtLeast(firstTime + DAY_MS.toLong())
+        val startTime = (lastTime - DEFAULT_TREND_WINDOW_MS).coerceAtLeast(firstTime)
+        return points.filter { it.timestampMs in startTime..lastTime }
     }
 
     fun linearFit(points: List<Point>): LinearFit? {

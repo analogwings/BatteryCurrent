@@ -88,6 +88,24 @@ class CalibrationCapacityHistoryTest {
         assertNull(fit.rSquared)
     }
 
+    @Test
+    fun monthlySlopeUsesAnAverageCalendarMonthAndPreservesItsSign() {
+        val decreasing = CalibrationCapacityHistory.linearFit(listOf(point(0, 5000.0), point(1, 4990.0)))!!
+        val increasing = CalibrationCapacityHistory.linearFit(listOf(point(0, 5000.0), point(1, 5010.0)))!!
+
+        assertEquals(-304.375, decreasing.slopeMahPerMonth, 0.000001)
+        assertEquals(304.375, increasing.slopeMahPerMonth, 0.000001)
+    }
+
+    @Test
+    fun defaultTrendUsesTheSameNinetyDayWindowAsTheGraph() {
+        val points = listOf(point(120, 4400.0), point(29, 4900.0), point(30, 4800.0), point(0, 5000.0))
+
+        assertEquals(listOf(point(120, 4400.0), point(30, 4800.0)), CalibrationCapacityHistory.defaultTrendPoints(points))
+        assertEquals(emptyList<CalibrationCapacityHistory.Point>(), CalibrationCapacityHistory.defaultTrendPoints(emptyList()))
+        assertEquals(listOf(point(0, 5000.0)), CalibrationCapacityHistory.defaultTrendPoints(listOf(point(0, 5000.0))))
+    }
+
     private fun point(day: Int, capacityMah: Double): CalibrationCapacityHistory.Point {
         return CalibrationCapacityHistory.Point(origin + day * dayMs, capacityMah)
     }

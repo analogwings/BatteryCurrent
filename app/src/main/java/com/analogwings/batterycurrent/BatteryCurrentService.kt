@@ -80,7 +80,7 @@ class BatteryCurrentService : Service() {
         private const val GRAPH_BLINK_UPDATE_MS = 1000L
         private const val FOREGROUND_INDICATOR_UPDATE_MS = 1000L
         private const val DAY_MS = 24L * 60L * 60L * 1000L
-        private const val CAPACITY_TREND_VIEWPORT_MS = 90L * DAY_MS
+        private const val CAPACITY_TREND_VIEWPORT_MS = CalibrationCapacityHistory.DEFAULT_TREND_WINDOW_MS
         private const val MAX_CAPACITY_RATE_GRAPH_POINTS = 100
         private const val CAPACITY_RATE_BIN_WIDTH_C = 0.01
         private const val CAPACITY_TEMP_BIN_WIDTH_C = 1.0
@@ -1856,7 +1856,7 @@ class BatteryCurrentService : Service() {
     private fun buildPrimaryCapacityLine(estimateMah: Int?): CapacityLine {
         val palette = graphPalette()
         val summary = BatteryCapacitySummary.load(this, capacityEstimator)
-        val currentMah = summary.current.meanMah?.roundToInt() ?: estimateMah
+        val currentMah = summary.capacityEstimateMah?.roundToInt() ?: estimateMah
         val text = summary.displayText()
         val valueStart = text.indexOf(": ") + 2
         val valueEnd = text.indexOf('\n')
@@ -2700,7 +2700,9 @@ class BatteryCurrentService : Service() {
                 text = when {
                     history.isEmpty() -> "No dated calibration events yet."
                     fit == null -> "Linear fit needs at least 2 events at different times."
-                    else -> String.format(Locale.US, "Linear fit: %+.2f mAh/day", fit.slopeMahPerDay) +
+                    else -> "Linear fit/month: " + BatteryCapacitySummary.monthlyChangeText(
+                        fit.slopeMahPerMonth, BatteryCapacityReference.originalCapacityMah(this@BatteryCurrentService)
+                    ) +
                         (fit.rSquared?.let { String.format(Locale.US, " (R\u00B2=%.2f)", it) } ?: "")
                 } + if (history.size < results.size) "\n${results.size - history.size} events have no readable date; they remain listed below." else ""
                 textSize = 11f
@@ -3126,7 +3128,7 @@ class BatteryCurrentService : Service() {
             drawTicks(canvas, startMs, endMs, yRange.first, yRange.second)
             drawFitLine(canvas, visiblePoints, startMs, endMs, yRange.first, yRange.second)
             drawPoints(canvas, visiblePoints, startMs, endMs, yRange.first, yRange.second)
-            drawLegend(canvas)
+            drawLegend(canvas, visiblePoints)
             drawResetButton(canvas)
         }
 
@@ -3204,7 +3206,7 @@ class BatteryCurrentService : Service() {
             canvas.drawPath(path, fitPaint)
         }
 
-        private fun drawLegend(canvas: Canvas) {
+        private fun drawLegend(canvas: Canvas, items: List<CapacityTimePoint>) {
             labelPaint.textAlign = Paint.Align.LEFT
             labelPaint.color = trendLegendColor()
             val y = 46f
@@ -3214,7 +3216,15 @@ class BatteryCurrentService : Service() {
             canvas.drawText("daily avg", x + 20f, y, labelPaint)
             x += 148f
             canvas.drawLine(x, y - 6f, x + 30f, y - 6f, fitPaint)
-            canvas.drawText("fit", x + 40f, y, labelPaint)
+            val fit = CalibrationCapacityHistory.linearFit(items.map {
+                CalibrationCapacityHistory.Point(it.timestampMs, it.capacityMah)
+            })
+            val fitText = fit?.let {
+                "fit/month: " + BatteryCapacitySummary.monthlyChangeText(
+                    it.slopeMahPerMonth, BatteryCapacityReference.originalCapacityMah(context)
+                )
+            } ?: "fit/month: n/a"
+            canvas.drawText(fitText, x + 40f, y, labelPaint)
         }
 
         private fun drawResetButton(canvas: Canvas) {
@@ -3230,18 +3240,10 @@ class BatteryCurrentService : Service() {
         }
 
         private fun linearFit(items: List<CapacityTimePoint>, startMs: Long): Pair<Double, Double>? {
-            if (items.size < 2) return null
-            val n = items.size.toDouble()
-            val xs = items.map { (it.timestampMs - startMs).toDouble() / DAY_MS.toDouble() }
-            val sumX = xs.sum()
-            val sumY = items.sumOf { it.capacityMah }
-            val sumXX = xs.sumOf { it * it }
-            val sumXY = items.zip(xs).sumOf { (point, x) -> point.capacityMah * x }
-            val denominator = n * sumXX - sumX * sumX
-            if (abs(denominator) < 1e-9) return null
-            val slope = (n * sumXY - sumX * sumY) / denominator
-            val intercept = (sumY - slope * sumX) / n
-            return intercept to slope
+            val fit = CalibrationCapacityHistory.linearFit(items.map {
+                CalibrationCapacityHistory.Point(it.timestampMs, it.capacityMah)
+            }) ?: return null
+            return fit.capacityAt(startMs) to fit.slopeMahPerDay
         }
 
         private fun visibleTimeRange(): Pair<Long, Long> {
@@ -4406,8 +4408,7 @@ class BatteryCurrentService : Service() {
             val bottom = height - 86f
             bounds.set(left, top, right, bottom)
 
-            val maxAbsDeviation = points.maxOfOrNull { abs(it.deviationFromIdeal) } ?: 0.0
-            val yLimit = niceDeviationLimit(maxAbsDeviation)
+            val yLimit = 0.10
 
             drawDeviationTicks(canvas, yLimit)
             drawSocAxisTicks(canvas)
@@ -4431,6 +4432,8 @@ class BatteryCurrentService : Service() {
                 Triple(point, x, y)
             }
 
+            canvas.save()
+            canvas.clipRect(bounds)
             drawBucketAverageLine(canvas, yLimit)
 
             plottedSamples.forEach { (point, x, y) ->
@@ -4441,6 +4444,7 @@ class BatteryCurrentService : Service() {
                 }
                 canvas.drawCircle(x, y, 5f, pointPaint)
             }
+            canvas.restore()
 
             canvas.drawText("dots = samples, line = bucket avg", bounds.right - 380f, 28f, labelPaint)
             drawAxisLabels(canvas)
@@ -4497,7 +4501,7 @@ class BatteryCurrentService : Service() {
         }
 
         private fun yForDeviation(value: Double, yLimit: Double): Float {
-            val fraction = ((value.coerceIn(-yLimit, yLimit) + yLimit) / (2.0 * yLimit)).toFloat()
+            val fraction = ((value + yLimit) / (2.0 * yLimit)).toFloat()
             return bounds.bottom - fraction * bounds.height()
         }
 
@@ -4526,12 +4530,6 @@ class BatteryCurrentService : Service() {
             }
         }
 
-        private fun niceDeviationLimit(value: Double): Double {
-            val requiredPct = value.coerceAtLeast(0.05) * 100.0
-            val cleanLimitsPct = doubleArrayOf(5.0, 10.0, 20.0, 50.0, 100.0)
-            val selectedPct = cleanLimitsPct.firstOrNull { requiredPct <= it } ?: 100.0
-            return selectedPct / 100.0
-        }
     }
 
     private class EnergyGraphView(
@@ -4557,7 +4555,7 @@ class BatteryCurrentService : Service() {
         private var customDurationMs: Float? = null
         private var customRightAxisMin: Double? = null
         private var customRightAxisMax: Double? = null
-        private val rightAxisAverageTimeConstantMs = 60L * 60L * 1000L
+        private val rightAxisAverageTimeConstantMs = 15L * 60L * 1000L
         private var activeZoomAxis: ZoomAxis? = null
         private var isViewportGestureActive = false
         private var isRightAxisLabelTouchActive = false

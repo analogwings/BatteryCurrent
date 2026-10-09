@@ -8,6 +8,8 @@ import kotlin.math.roundToInt
 import kotlin.math.sqrt
 
 object BatteryCapacitySummary {
+    data class CapacityTrend(val capacityMah: Double, val changeMahPerMonth: Double)
+
     data class Distribution(
         val count: Int,
         val meanMah: Double?,
@@ -21,20 +23,35 @@ object BatteryCapacitySummary {
         val averageDischargeCurrentMa: Double?,
         val averageTemperatureC: Double?,
         val usesDailyFallback: Boolean = false,
-        val referenceCapacityMah: Int? = null
+        val referenceCapacityMah: Int? = null,
+        val fullCalibrationTrend: CapacityTrend? = null,
+        val partialCapacityTrend: CapacityTrend? = null
     ) {
+        val combinedCapacityTrend: CapacityTrend?
+            get() {
+                val full = fullCalibrationTrend ?: return partialCapacityTrend
+                val partial = partialCapacityTrend ?: return full
+                return CapacityTrend(
+                    capacityMah = full.capacityMah / 2.0 + partial.capacityMah / 2.0,
+                    changeMahPerMonth = full.changeMahPerMonth / 2.0 + partial.changeMahPerMonth / 2.0
+                )
+            }
+
+        val capacityEstimateMah: Double?
+            get() = combinedCapacityTrend?.capacityMah ?: current.meanMah
+
         fun displayText(): String {
-            val estimate = current.meanMah?.let { String.format(Locale.US, "%.0f mAh", it) }
+            val estimate = capacityEstimateMah?.let { String.format(Locale.US, "%.0f mAh", it) }
                 ?: "Collecting data"
             val changeSinceNew = referenceCapacityMah?.takeIf { it > 0 }?.let { originalMah ->
-                current.meanMah?.takeIf { it.isFinite() && it > 0.0 }?.let { currentMah ->
+                capacityEstimateMah?.takeIf { it.isFinite() && it > 0.0 }?.let { currentMah ->
                     String.format(Locale.US, " (%+.1f%%)", (currentMah - originalMah) * 100.0 / originalMah)
                 }
             }.orEmpty()
             val spread = current.standardDeviationMah?.let { String.format(Locale.US, "%.0f mAh", it) }
                 ?: "n/a (need 2 events)"
             val referenceCapacity = referenceCapacityMah?.takeIf { it > 0 }?.toDouble()
-                ?: current.meanMah?.takeIf { it.isFinite() && it > 0.0 }
+                ?: capacityEstimateMah?.takeIf { it.isFinite() && it > 0.0 }
             val currentText = averageDischargeCurrentMa?.let { currentMa ->
                 val cRateText = referenceCapacity?.let { String.format(Locale.US, " (%.2fC)", currentMa / it) }.orEmpty()
                 String.format(Locale.US, "%.0fmA", currentMa) + cRateText
@@ -45,9 +62,29 @@ object BatteryCapacitySummary {
             } else {
                 "${quick.count} quick + ${calibration.count} full calibration events"
             }
+            val trendText = combinedCapacityTrend?.let {
+                "\nCapacity change/month: " + monthlyChangeText(it.changeMahPerMonth, referenceCapacityMah)
+            }.orEmpty()
             return "Current battery capacity: $estimate$changeSinceNew\n" +
                 "Std deviation (1\u03C3): $spread\n" +
-                "Avg Discharge: $currentText   Avg temp: $temperatureText\n" + sourceText
+                "Avg Discharge: $currentText   Avg temp: $temperatureText\n" + sourceText + trendText
+        }
+
+        internal fun withCapacityTrends(
+            fullPoints: List<CalibrationCapacityHistory.Point>,
+            partialPoints: List<CalibrationCapacityHistory.Point>,
+            nowMs: Long
+        ): Summary {
+            fun trend(points: List<CalibrationCapacityHistory.Point>): CapacityTrend? {
+                val fit = CalibrationCapacityHistory.linearFit(points) ?: return null
+                val capacity = fit.capacityAt(nowMs)
+                if (!capacity.isFinite() || capacity <= 0.0 || !fit.slopeMahPerMonth.isFinite()) return null
+                return CapacityTrend(capacity, fit.slopeMahPerMonth)
+            }
+            return copy(
+                fullCalibrationTrend = trend(fullPoints),
+                partialCapacityTrend = trend(CalibrationCapacityHistory.defaultTrendPoints(partialPoints))
+            )
         }
     }
 
@@ -57,11 +94,15 @@ object BatteryCapacitySummary {
         val adjustedCapacities = calibrationResults.map { result ->
             usageBasedCalibrationCapacity(result, estimator)
         }
+        val history = estimator.capacityEstimateHistory()
         val summary = calculate(quickEvents, calibrationResults, adjustedCapacities).copy(
             referenceCapacityMah = BatteryCapacityReference.originalCapacityMah(context)
+        ).withCapacityTrends(
+            CalibrationCapacityHistory.points(calibrationResults),
+            history.map { CalibrationCapacityHistory.Point(it.timestampMs, it.averageCapacityMah.toDouble()) },
+            System.currentTimeMillis()
         )
         if (summary.current.count > 0) return summary
-        val history = estimator.capacityEstimateHistory()
         val sampleCount = history.sumOf { it.sampleCount.toLong() }
         if (sampleCount <= 0L) return summary
         val mean = history.sumOf { it.averageCapacityMah.toDouble() * it.sampleCount } / sampleCount
@@ -69,6 +110,13 @@ object BatteryCapacitySummary {
             current = Distribution(0, mean, null),
             usesDailyFallback = true
         )
+    }
+
+    internal fun monthlyChangeText(changeMahPerMonth: Double, referenceCapacityMah: Int?): String {
+        val percent = referenceCapacityMah?.takeIf { it > 0 }?.let {
+            String.format(Locale.US, " (%+.2f%%)", changeMahPerMonth * 100.0 / it)
+        }.orEmpty()
+        return String.format(Locale.US, "%+.0f mAh", changeMahPerMonth) + percent
     }
 
     internal fun calculate(
