@@ -113,6 +113,7 @@ class BatteryCurrentService : Service() {
     private var socCurvePopupView: View? = null
     private var calibrationResultPopupView: View? = null
     private var capacityStatsPopupView: View? = null
+    private var capacityStatsGraphView: CapacityRateCurveView? = null
     private var statsDetailsPopupView: View? = null
     private var capacityStatsGraphMode = CapacityStatsGraphMode.DISCHARGE_RATE
     private var graphMenuCollapsed = false
@@ -426,6 +427,7 @@ class BatteryCurrentService : Service() {
         }
 
         try {
+            updateCapacityStatsGraph()
             updateGraphOverlay()
         } catch (exception: Exception) {
             logServiceIssue("graph update from sample failed", exception)
@@ -2563,7 +2565,8 @@ class BatteryCurrentService : Service() {
             })
 
             addView(TextView(this@BatteryCurrentService).apply {
-                text = "Capacity normalized to 0.2C uses completed capacity-window events and the learned load sensitivity."
+                text = "Capacity normalized to 0.2C uses completed capacity-window events and the learned load sensitivity.\n" +
+                    "Refreshes every 10s; new points require completed discharge events."
                 textSize = 11f
                 setTextColor(palette.mutedText)
                 setPadding(0, 6, 0, 8)
@@ -2600,6 +2603,7 @@ class BatteryCurrentService : Service() {
                             CapacityStatsGraphMode.DISCHARGE_RATE
                         }
                         graphView.setGraphMode(capacityStatsGraphMode)
+                        updateCapacityStatsGraph()
                         setGraphToggleText(this)
                     }
                 })
@@ -2650,6 +2654,7 @@ class BatteryCurrentService : Service() {
         }
 
         capacityStatsPopupView = popup
+        capacityStatsGraphView = graphView
         val params = WindowManager.LayoutParams(
             820,
             WindowManager.LayoutParams.WRAP_CONTENT,
@@ -2664,7 +2669,14 @@ class BatteryCurrentService : Service() {
             windowManager?.addView(popup, params)
         } catch (_: Exception) {
             capacityStatsPopupView = null
+            capacityStatsGraphView = null
         }
+    }
+
+    private fun updateCapacityStatsGraph() {
+        val graphView = capacityStatsGraphView ?: return
+        val referenceCapacityMah = capacityEstimator.capacityStats().referenceCapacityMah
+        graphView.setPoints(capacityRateGraphPoints(referenceCapacityMah))
     }
 
     private fun showDirectionStatsPopup(isDischarge: Boolean) {
@@ -2914,6 +2926,7 @@ class BatteryCurrentService : Service() {
     }
 
     private fun removeCapacityStatsPopup() {
+        capacityStatsGraphView = null
         removeStatsDetailsPopup()
         val view = capacityStatsPopupView ?: return
         try {
@@ -3417,6 +3430,7 @@ class BatteryCurrentService : Service() {
         }
 
         fun setPoints(items: List<CapacityRatePoint>) {
+            if (points == items) return
             points.clear()
             points.addAll(items)
             invalidate()
@@ -4654,13 +4668,22 @@ class BatteryCurrentService : Service() {
             strokeWidth = 2.5f
             pathEffect = DashPathEffect(floatArrayOf(12f, 10f), 0f)
         }
-        private val axisTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = palette.text
+        private val leftAxisTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = palette.discharge
             textSize = 28f
+        }
+        private val rightAxisTextPaint = Paint(leftAxisTextPaint).apply {
+            color = palette.rightAxisPositive
         }
         private val tickTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = palette.text
             textSize = 26f
+        }
+        private val leftAxisTickTextPaint = Paint(tickTextPaint).apply {
+            color = palette.discharge
+        }
+        private val rightAxisTickTextPaint = Paint(tickTextPaint).apply {
+            color = palette.rightAxisPositive
         }
         private val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = palette.fill
@@ -5196,10 +5219,10 @@ class BatteryCurrentService : Service() {
         }
 
         private fun drawEnergyUnitLabel(canvas: Canvas) {
-            axisTextPaint.textAlign = Paint.Align.CENTER
+            leftAxisTextPaint.textAlign = Paint.Align.CENTER
             canvas.save()
             canvas.rotate(-90f, 22f, plotBounds.centerY())
-            canvas.drawText(displayUnit, 22f, plotBounds.centerY(), axisTextPaint)
+            canvas.drawText(displayUnit, 22f, plotBounds.centerY(), leftAxisTextPaint)
             canvas.restore()
         }
 
@@ -5209,14 +5232,14 @@ class BatteryCurrentService : Service() {
                 return
             }
 
-            axisTextPaint.textAlign = Paint.Align.CENTER
+            rightAxisTextPaint.textAlign = Paint.Align.CENTER
             val labelX = plotBounds.right + 82f
             val labelY = plotBounds.centerY()
             rightAxisLabelHitRect.set(labelX - 28f, labelY - 86f, labelX + 28f, labelY + 86f)
             canvas.drawRoundRect(rightAxisLabelHitRect, 10f, 10f, rightAxisLabelBackgroundPaint)
             canvas.save()
             canvas.rotate(90f, labelX, labelY)
-            canvas.drawText(rightAxisUnitLabel(), labelX, labelY + 10f, axisTextPaint)
+            canvas.drawText(rightAxisUnitLabel(), labelX, labelY + 10f, rightAxisTextPaint)
             canvas.restore()
         }
 
@@ -5294,8 +5317,8 @@ class BatteryCurrentService : Service() {
             scale.ticks.forEach { tick ->
                 val y = yForRightAxisValue(tick, scale)
                 canvas.drawLine(plotBounds.right, y, plotBounds.right + 12f, y, tickPaint)
-                tickTextPaint.textAlign = Paint.Align.LEFT
-                canvas.drawText(formatRightAxisTick(tick), plotBounds.right + 16f, y + 9f, tickTextPaint)
+                rightAxisTickTextPaint.textAlign = Paint.Align.LEFT
+                canvas.drawText(formatRightAxisTick(tick), plotBounds.right + 16f, y + 9f, rightAxisTickTextPaint)
             }
         }
 
@@ -5671,7 +5694,7 @@ class BatteryCurrentService : Service() {
             energyRange: Double,
             energyStep: Double
         ) {
-            tickTextPaint.textAlign = Paint.Align.RIGHT
+            leftAxisTickTextPaint.textAlign = Paint.Align.RIGHT
             drawMinorEnergyTicks(canvas, minEnergy, energyRange, energyStep)
 
             energyTicks.forEach { energy ->
@@ -5679,7 +5702,7 @@ class BatteryCurrentService : Service() {
                 canvas.drawLine(plotBounds.left, y, plotBounds.right, y, gridPaint)
                 canvas.drawLine(plotBounds.left - 12f, y, plotBounds.left, y, tickPaint)
                 canvas.drawLine(plotBounds.right, y, plotBounds.right + 12f, y, tickPaint)
-                canvas.drawText(formatSignedAxis(energy), plotBounds.left - 16f, y + 9f, tickTextPaint)
+                canvas.drawText(formatSignedAxis(energy), plotBounds.left - 16f, y + 9f, leftAxisTickTextPaint)
             }
         }
 
