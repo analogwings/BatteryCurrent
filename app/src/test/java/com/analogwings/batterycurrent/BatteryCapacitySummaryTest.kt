@@ -52,6 +52,36 @@ class BatteryCapacitySummaryTest {
     }
 
     @Test
+    fun averageTemperatureUsesCelsiusByDefault() {
+        val summary = BatteryCapacitySummary.calculate(
+            listOf(quickEvent(4700, temperatureC = 32.9)), emptyList()
+        )
+
+        assertTrue(summary.displayText().contains("Avg temp: 32.9\u00B0C"))
+    }
+
+    @Test
+    fun averageTemperatureConvertsTheValueAndLabelToFahrenheitWithoutChangingStoredData() {
+        val summary = BatteryCapacitySummary.calculate(
+            listOf(quickEvent(4700, temperatureC = 32.9)), emptyList()
+        ).copy(useFahrenheit = true)
+
+        assertTrue(summary.displayText().contains("Avg temp: 91.2\u00B0F"))
+        assertEquals(32.9, summary.averageTemperatureC!!, 0.001)
+        assertTrue(summary.copy(useFahrenheit = false).displayText().contains("Avg temp: 32.9\u00B0C"))
+        assertTrue(summary.copy(averageTemperatureC = 0.0).displayText().contains("Avg temp: 32.0\u00B0F"))
+        assertTrue(summary.copy(averageTemperatureC = -40.0).displayText().contains("Avg temp: -40.0\u00B0F"))
+    }
+
+    @Test
+    fun missingAverageTemperatureRemainsUnavailableInEitherUnit() {
+        val summary = BatteryCapacitySummary.calculate(emptyList(), emptyList())
+
+        assertTrue(summary.displayText().contains("Avg temp: n/a"))
+        assertTrue(summary.copy(useFahrenheit = true).displayText().contains("Avg temp: n/a"))
+    }
+
+    @Test
     fun dischargeCRateUsesConfiguredReferenceCapacity() {
         val summary = BatteryCapacitySummary.calculate(
             listOf(quickEvent(4700, currentMa = 471.0)),

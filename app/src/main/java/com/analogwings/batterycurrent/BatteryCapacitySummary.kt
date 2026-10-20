@@ -25,7 +25,8 @@ object BatteryCapacitySummary {
         val usesDailyFallback: Boolean = false,
         val referenceCapacityMah: Int? = null,
         val fullCalibrationTrend: CapacityTrend? = null,
-        val partialCapacityTrend: CapacityTrend? = null
+        val partialCapacityTrend: CapacityTrend? = null,
+        val useFahrenheit: Boolean = false
     ) {
         val combinedCapacityTrend: CapacityTrend?
             get() {
@@ -56,7 +57,11 @@ object BatteryCapacitySummary {
                 val cRateText = referenceCapacity?.let { String.format(Locale.US, " (%.2fC)", currentMa / it) }.orEmpty()
                 String.format(Locale.US, "%.0fmA", currentMa) + cRateText
             } ?: "n/a"
-            val temperatureText = averageTemperatureC?.let { String.format(Locale.US, "%.1f\u00B0C", it) } ?: "n/a"
+            val temperatureText = averageTemperatureC?.let { celsius ->
+                val temperature = if (useFahrenheit) celsius * 9.0 / 5.0 + 32.0 else celsius
+                val unit = if (useFahrenheit) "F" else "C"
+                String.format(Locale.US, "%.1f\u00B0%s", temperature, unit)
+            } ?: "n/a"
             val sourceText = if (usesDailyFallback) {
                 "Historical daily estimates; event uncertainty unavailable"
             } else {
@@ -96,7 +101,9 @@ object BatteryCapacitySummary {
         }
         val history = estimator.capacityEstimateHistory()
         val summary = calculate(quickEvents, calibrationResults, adjustedCapacities).copy(
-            referenceCapacityMah = BatteryCapacityReference.originalCapacityMah(context)
+            referenceCapacityMah = BatteryCapacityReference.originalCapacityMah(context),
+            useFahrenheit = context.getSharedPreferences("battery_current_display_prefs", Context.MODE_PRIVATE)
+                .getString("temperature_unit", "C") == "F"
         ).withCapacityTrends(
             CalibrationCapacityHistory.points(calibrationResults),
             history.map { CalibrationCapacityHistory.Point(it.timestampMs, it.averageCapacityMah.toDouble()) },

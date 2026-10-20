@@ -1638,7 +1638,8 @@ class BatteryCurrentService : Service() {
             isFahrenheitSelected(),
             CapacityThresholdPreference.load(this),
             selectedXAxisMode(),
-            is24HourClockSelected()
+            is24HourClockSelected(),
+            newIsCharging = latestRoundedMilliAmps?.takeIf { it != 0 }?.let { it > 0 } ?: lastPluggedState
         )
         updateCapacityEstimatePanel(capacityPanel)
         updateGraphMenuVisibility(container)
@@ -4754,11 +4755,15 @@ class BatteryCurrentService : Service() {
             newUseFahrenheit: Boolean,
             newCapacityThresholds: CapacityThresholdPreference.Thresholds,
             newXAxisMode: String,
-            newUse24HourClock: Boolean
+            newUse24HourClock: Boolean,
+            newIsCharging: Boolean
         ) {
             points.clear()
             points.addAll(newPoints)
             displayUnit = unit
+            val leftAxisColor = if (newIsCharging) palette.charge else palette.discharge
+            leftAxisTextPaint.color = leftAxisColor
+            leftAxisTickTextPaint.color = leftAxisColor
             zeroTimestampMs = zeroTimeMs
             capacityThresholds = newCapacityThresholds
             xAxisMode = newXAxisMode
