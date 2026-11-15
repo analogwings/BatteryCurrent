@@ -82,8 +82,8 @@ class BatteryCurrentService : Service() {
         private const val DAY_MS = 24L * 60L * 60L * 1000L
         private const val CAPACITY_TREND_VIEWPORT_MS = CalibrationCapacityHistory.DEFAULT_TREND_WINDOW_MS
         private const val MAX_CAPACITY_RATE_GRAPH_POINTS = 100
-        private const val CAPACITY_RATE_BIN_WIDTH_C = 0.01
-        private const val CAPACITY_TEMP_BIN_WIDTH_C = 1.0
+        private const val CAPACITY_RATE_BIN_WIDTH_C = 0.005
+        private const val CAPACITY_TEMP_BIN_WIDTH_C = 0.5
         private const val RIGHT_AXIS_BATTERY = "battery"
         private const val RIGHT_AXIS_TEMPERATURE = "temperature"
         private const val RIGHT_AXIS_VOLTAGE = "voltage"
